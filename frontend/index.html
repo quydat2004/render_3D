@@ -220,11 +220,17 @@
       if (currentMeshGroup) scene.remove(currentMeshGroup);
       currentMeshGroup = new THREE.Group();
 
-      const geom = new THREE.CylinderGeometry(0.25, 0.25, 1.8, 32);
-      const mat = new THREE.MeshStandardMaterial({ color: 0x00b8c4, roughness: 0.3, metalness: 0.7 });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.y = 0.9;
-      currentMeshGroup.add(mesh);
+      // Stylized holographic pedestal
+      const geom = new THREE.CylinderGeometry(1.2, 1.4, 0.08, 32);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0x00f0ff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.4
+      });
+      const pedestal = new THREE.Mesh(geom, mat);
+      pedestal.position.y = 0.04;
+      currentMeshGroup.add(pedestal);
       scene.add(currentMeshGroup);
     }
 
@@ -235,13 +241,30 @@
       loader.load(url, (gltf) => {
         if (currentMeshGroup) scene.remove(currentMeshGroup);
         currentMeshGroup = gltf.scene;
+
+        currentMeshGroup.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+            child.material = new THREE.MeshStandardMaterial({
+              color: currentMode === 'character' ? 0xe2e8f0 : (currentMode === 'weapon' ? 0x00f0ff : 0x94a3b8),
+              roughness: 0.35,
+              metalness: currentMode === 'weapon' ? 0.8 : 0.2,
+              wireframe: isWireframe
+            });
+          }
+        });
+
         scene.add(currentMeshGroup);
 
         // Center and frame
         const box = new THREE.Box3().setFromObject(currentMeshGroup);
         const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z, 0.5);
+
         controls.target.copy(center);
-        camera.position.set(center.x, center.y + 1, center.z + 3);
+        camera.position.set(center.x, center.y + size.y * 0.2, center.z + maxDim * 1.8);
         controls.update();
 
         // Download button

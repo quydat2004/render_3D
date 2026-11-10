@@ -19,6 +19,7 @@ from services.dcc.blender_pipeline_processor import BlenderPipelineProcessor
 from services.dcc.character_rigging_engine import CharacterRiggingEngine
 from services.dcc.weapon_hard_surface import WeaponHardSurfaceEngine, WeaponSocket
 from services.dcc.map_modular_assembler import ModularMapAssembler
+from services.inference.procedural_generator import Procedural3DGenerator
 
 settings = AppSettings()
 app = FastAPI(
@@ -35,6 +36,7 @@ blender_proc = BlenderPipelineProcessor(blender_path=settings.blender_executable
 char_rigger = CharacterRiggingEngine()
 weapon_engine = WeaponHardSurfaceEngine()
 map_assembler = ModularMapAssembler()
+proc_gen = Procedural3DGenerator()
 
 class CharacterRequest(BaseModel):
     prompt: str = Field(description="Character description")
@@ -80,9 +82,8 @@ def generate_character(req: CharacterRequest):
     # 1. Gemini Cognitive Concept Expansion
     concept = orchestrator.expand_asset_prompt(req.prompt, AssetType.CHARACTER)
 
-    # 2. Generative 3D Mesh (base humanoid geometry)
-    raw_mesh = trimesh.creation.cylinder(radius=0.25, height=1.8)
-    raw_mesh.apply_translation([0, 0, 0.9])
+    # 2. Generative 3D Mesh (humanoid anatomy tailored to prompt)
+    raw_mesh = proc_gen.generate_character_mesh(req.prompt, concept)
 
     raw_obj_path = ASSETS_DIR / f"char_raw_{task_id}.obj"
     raw_mesh.export(str(raw_obj_path))
@@ -126,9 +127,8 @@ def generate_weapon(req: WeaponRequest):
     # 1. Gemini Cognitive Expansion
     concept = orchestrator.expand_asset_prompt(req.prompt, AssetType.WEAPON)
 
-    # 2. Hard-Surface Base Mesh
-    raw_weapon = trimesh.creation.box(extents=[0.08, 0.85, 0.25])
-    raw_weapon.apply_translation([0, 0.2, 0])
+    # 2. Hard-Surface Base Mesh (tailored to weapon prompt: blade, rifle, hammer)
+    raw_weapon = proc_gen.generate_weapon_mesh(req.prompt, concept)
 
     raw_obj_path = ASSETS_DIR / f"weapon_raw_{task_id}.obj"
     raw_weapon.export(str(raw_obj_path))
