@@ -19,12 +19,12 @@ if not exist "storage\assets" (
 echo [1/2] Checking dependencies...
 python -m pip install -r requirements.txt --quiet
 
-echo [2/2] Opening Swagger Docs in browser...
-start http://localhost:8000/docs
+echo [2/2] Opening 3D Studio Web UI in browser...
+start http://localhost:8000
 
 echo.
-echo Server running at: http://localhost:8000
-echo Interactive Docs:  http://localhost:8000/docs
+echo Studio Web UI:     http://localhost:8000
+echo Swagger API Docs:  http://localhost:8000/docs
 echo Press Ctrl+C to stop.
 echo.
 

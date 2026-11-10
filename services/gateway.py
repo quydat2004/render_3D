@@ -3,7 +3,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import trimesh
 
@@ -49,6 +49,14 @@ class WeaponRequest(BaseModel):
 class MapRequest(BaseModel):
     prompt: str = Field(description="Level/Environment description")
     dimensions: Optional[List[float]] = Field(default=[40.0, 40.0])
+
+FRONTEND_HTML = Path("frontend/index.html")
+
+@app.get("/", response_class=HTMLResponse)
+def serve_ui():
+    if not FRONTEND_HTML.exists():
+        raise HTTPException(status_code=404, detail="Frontend UI not found")
+    return HTMLResponse(content=FRONTEND_HTML.read_text(encoding="utf-8"))
 
 @app.get("/health")
 def health_check():

@@ -53,6 +53,13 @@ def test_health_check_endpoint():
     assert data["status"] == "ok"
     assert "blender_available" in data
 
+def test_root_serves_html_ui():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Render3D AI Studio" in response.text
+    assert "canvas3d" in response.text
+
 def test_generate_character_endpoint(tmp_path):
     payload = {
         "prompt": "Cyberpunk female ninja",
