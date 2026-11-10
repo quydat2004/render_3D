@@ -9,6 +9,7 @@ node_modules/
 dist/
 storage/
 log/
+.playwright-mcp/
 *.glb
 *.obj
 *.ply

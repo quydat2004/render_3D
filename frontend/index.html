@@ -179,17 +179,20 @@
       controls.target.set(0, 0.8, 0);
 
       // Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
       scene.add(ambientLight);
 
-      const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-      dirLight.position.set(5, 10, 7);
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x1e293b, 1.0);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+      dirLight.position.set(5, 12, 8);
       dirLight.castShadow = true;
       scene.add(dirLight);
 
-      const backLight = new THREE.DirectionalLight(0x00f0ff, 0.6);
-      backLight.position.set(-5, 5, -5);
-      scene.add(backLight);
+      const frontLight = new THREE.DirectionalLight(0x00f0ff, 0.7);
+      frontLight.position.set(0, 2, 5);
+      scene.add(frontLight);
 
       // Grid
       gridHelper = new THREE.GridHelper(10, 20, 0x00f0ff, 0x1e293b);
@@ -246,25 +249,39 @@
           if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
+            if (child.geometry) {
+              child.geometry.computeVertexNormals();
+            }
             child.material = new THREE.MeshStandardMaterial({
-              color: currentMode === 'character' ? 0xe2e8f0 : (currentMode === 'weapon' ? 0x00f0ff : 0x94a3b8),
-              roughness: 0.35,
-              metalness: currentMode === 'weapon' ? 0.8 : 0.2,
-              wireframe: isWireframe
+              color: currentMode === 'character' ? 0x93c5fd : (currentMode === 'weapon' ? 0x38bdf8 : 0xcbd5e1),
+              roughness: 0.4,
+              metalness: currentMode === 'weapon' ? 0.6 : 0.15,
+              wireframe: isWireframe,
+              side: THREE.DoubleSide
             });
           }
         });
 
         scene.add(currentMeshGroup);
 
-        // Center and frame
-        const box = new THREE.Box3().setFromObject(currentMeshGroup);
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z, 0.5);
+        // Auto-orient and ground to floor
+        let box = new THREE.Box3().setFromObject(currentMeshGroup);
+        let size = box.getSize(new THREE.Vector3());
 
-        controls.target.copy(center);
-        camera.position.set(center.x, center.y + size.y * 0.2, center.z + maxDim * 1.8);
+        if (currentMode === 'character' && size.z > size.y * 1.1) {
+          currentMeshGroup.rotation.x = -Math.PI / 2;
+          box.setFromObject(currentMeshGroup);
+          size = box.getSize(new THREE.Vector3());
+        }
+
+        const center = box.getCenter(new THREE.Vector3());
+        currentMeshGroup.position.y -= box.min.y;
+        currentMeshGroup.position.x -= center.x;
+        currentMeshGroup.position.z -= center.z;
+
+        const maxDim = Math.max(size.x, size.y, size.z, 1.0);
+        controls.target.set(0, size.y * 0.5, 0);
+        camera.position.set(0, size.y * 0.65, maxDim * 1.6);
         controls.update();
 
         // Download button

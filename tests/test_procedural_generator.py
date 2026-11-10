@@ -36,9 +36,9 @@ def test_generate_character_humanoid_mesh():
     assert len(mesh.vertices) > 200
     assert len(mesh.faces) > 200
 
-    # Check vertical height is realistic human scale (1.5m to 2.0m)
+    # Check vertical height is realistic human scale (1.5m to 2.0m along Y-up)
     bounds = mesh.bounds
-    height = bounds[1][2] - bounds[0][2]
+    height = bounds[1][1] - bounds[0][1]
     assert 1.4 <= height <= 2.1
 
     # Check A-pose lateral extension (arms should extend sideways |x| >= 0.3m)

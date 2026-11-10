@@ -125,6 +125,11 @@ class Procedural3DGenerator:
 
         # Merge all body parts
         combined = trimesh.util.concatenate(parts)
+        # Convert from CAD/Blender Z-up to glTF/Three.js standard Y-up
+        rot_z_to_y = trimesh.transformations.rotation_matrix(math.radians(-90), [1, 0, 0])
+        combined.apply_transform(rot_z_to_y)
+        # Ground base of mesh to Y=0
+        combined.apply_translation([0.0, -float(combined.bounds[0][1]), 0.0])
         combined.fix_normals()
         return combined
 
