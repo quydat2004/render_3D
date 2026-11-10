@@ -1,0 +1,14 @@
+﻿api-key.txt
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+virtualenv/
+.venv/
+node_modules/
+dist/
+*.glb
+*.obj
+*.ply
+*.fbx
+
