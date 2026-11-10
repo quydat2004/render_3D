@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from enum import Enum
@@ -16,6 +17,7 @@ except ImportError:
 from services.common.config import get_gemini_api_key
 
 logger = logging.getLogger(__name__)
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 class AssetType(str, Enum):
     CHARACTER = "character"
@@ -30,15 +32,35 @@ class OrthographicConceptPrompt(BaseModel):
     pose: str = Field(default="A-pose", description="Required anatomical stance: A-pose, T-pose, or Neutral")
     poly_budget: int = Field(default=25000, description="Target polygon budget in triangles/quads")
 
+class RoomSchema(BaseModel):
+    id: str = Field(description="Room identifier")
+    bounds: List[float] = Field(description="Bounding box [min_x, min_y, max_x, max_y]")
+    height: Optional[float] = Field(default=4.0, description="Ceiling clearance height")
+
+class CorridorSchema(BaseModel):
+    connects: List[str] = Field(description="Room IDs linked by corridor")
+    width: float = Field(default=4.0, description="Corridor width in meters")
+
+class SpawnPointSchema(BaseModel):
+    team: str = Field(default="Alpha", description="Team or faction tag")
+    pos: List[float] = Field(description="[X, Y, Z] coordinate")
+    rotation_yaw: Optional[float] = Field(default=0.0, description="Yaw orientation in degrees")
+
+class InstanceSchema(BaseModel):
+    asset_id: str = Field(description="Modular asset identifier (e.g. wall_4x4, floor_4x4)")
+    position: List[float] = Field(description="[X, Y, Z] position")
+    rotation: List[float] = Field(default=[0.0, 0.0, 0.0], description="Euler rotation degrees")
+    scale: List[float] = Field(default=[1.0, 1.0, 1.0], description="Scale factors")
+
 class LevelLayoutSchema(BaseModel):
     level_id: str = Field(description="Unique identifier for the map")
     dimensions: List[float] = Field(description="[width, length] in meters")
     grid_size_m: float = Field(default=2.0, description="Modular snapping grid step in meters")
     biome: str = Field(description="Theme/Biome designation (e.g., Cyberpunk_Alley, SciFi_Interior)")
-    rooms: List[Dict[str, Any]] = Field(default_factory=list, description="Defined sub-areas and bounds")
-    corridors: List[Dict[str, Any]] = Field(default_factory=list, description="Corridor links between rooms")
-    spawn_points: List[Dict[str, Any]] = Field(default_factory=list, description="Player/team spawn coordinates")
-    instances: List[Dict[str, Any]] = Field(default_factory=list, description="Placed modular kitbash objects")
+    rooms: List[RoomSchema] = Field(default_factory=list, description="Defined sub-areas and bounds")
+    corridors: List[CorridorSchema] = Field(default_factory=list, description="Corridor links between rooms")
+    spawn_points: List[SpawnPointSchema] = Field(default_factory=list, description="Player/team spawn coordinates")
+    instances: List[InstanceSchema] = Field(default_factory=list, description="Placed modular kitbash objects")
 
 class QAInspectionResult(BaseModel):
     score: int = Field(ge=0, le=100, description="Quality score between 0 and 100")
@@ -83,7 +105,7 @@ class GeminiOrchestrator:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash" if hasattr(self.client, "models") else "gemini-2.0-flash",
+                model=DEFAULT_GEMINI_MODEL,
                 contents=f"{system_instructions}\n\nUser request: {user_prompt}",
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -108,7 +130,7 @@ class GeminiOrchestrator:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash" if hasattr(self.client, "models") else "gemini-2.0-flash",
+                model=DEFAULT_GEMINI_MODEL,
                 contents=f"{system_instructions}\n\nEnvironment Request: {prompt}",
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -141,7 +163,7 @@ class GeminiOrchestrator:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash" if hasattr(self.client, "models") else "gemini-2.0-flash",
+                model=DEFAULT_GEMINI_MODEL,
                 contents=parts,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -174,20 +196,20 @@ class GeminiOrchestrator:
             grid_size_m=2.0,
             biome="Modular_SciFi_Industrial",
             rooms=[
-                {"id": "zone_alpha", "bounds": [0.0, 0.0, 20.0, 20.0]},
-                {"id": "zone_bravo", "bounds": [20.0, 20.0, 40.0, 40.0]}
+                RoomSchema(id="zone_alpha", bounds=[0.0, 0.0, 20.0, 20.0]),
+                RoomSchema(id="zone_bravo", bounds=[20.0, 20.0, 40.0, 40.0])
             ],
             corridors=[
-                {"connects": ["zone_alpha", "zone_bravo"], "width": 4.0}
+                CorridorSchema(connects=["zone_alpha", "zone_bravo"], width=4.0)
             ],
             spawn_points=[
-                {"team": "alpha", "pos": [2.0, 0.0, 2.0], "rotation_yaw": 45.0},
-                {"team": "bravo", "pos": [38.0, 0.0, 38.0], "rotation_yaw": 225.0}
+                SpawnPointSchema(team="alpha", pos=[2.0, 0.0, 2.0], rotation_yaw=45.0),
+                SpawnPointSchema(team="bravo", pos=[38.0, 0.0, 38.0], rotation_yaw=225.0)
             ],
             instances=[
-                {"asset_id": "wall_4x4", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
-                {"asset_id": "floor_4x4", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
-                {"asset_id": "crate_cover", "position": [10.0, 0.0, 10.0], "rotation": [0.0, 30.0, 0.0], "scale": [1.0, 1.0, 1.0]}
+                InstanceSchema(asset_id="wall_4x4", position=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0], scale=[1.0, 1.0, 1.0]),
+                InstanceSchema(asset_id="floor_4x4", position=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0], scale=[1.0, 1.0, 1.0]),
+                InstanceSchema(asset_id="crate_cover", position=[10.0, 0.0, 10.0], rotation=[0.0, 30.0, 0.0], scale=[1.0, 1.0, 1.0])
             ]
         )
 

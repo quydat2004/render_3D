@@ -52,8 +52,8 @@ class ModularMapAssembler:
         classified_props = []
 
         for idx, inst in enumerate(layout.instances):
-            asset_id = inst.get("asset_id", f"asset_{idx}")
-            raw_pos = inst.get("position", [0.0, 0.0, 0.0])
+            asset_id = inst.asset_id if hasattr(inst, "asset_id") else inst.get("asset_id", f"asset_{idx}")
+            raw_pos = inst.position if hasattr(inst, "position") else inst.get("position", [0.0, 0.0, 0.0])
             snapped_pos = self.snap_to_grid(raw_pos)
 
             # Generate or fetch standard kitbash unit
@@ -101,7 +101,8 @@ class ModularMapAssembler:
         output_glb: str
     ) -> str:
         safe_out = output_glb.replace("\\", "/")
-        instances_json = json.dumps(layout.instances)
+        inst_list = [i.model_dump() if hasattr(i, "model_dump") else i for i in layout.instances]
+        instances_json = json.dumps(inst_list)
 
         return f'''import bpy
 import json
