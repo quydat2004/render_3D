@@ -252,10 +252,12 @@
             if (child.geometry) {
               child.geometry.computeVertexNormals();
             }
+            const hasColors = child.geometry && child.geometry.attributes.color;
             child.material = new THREE.MeshStandardMaterial({
-              color: currentMode === 'character' ? 0x93c5fd : (currentMode === 'weapon' ? 0x38bdf8 : 0xcbd5e1),
-              roughness: 0.4,
-              metalness: currentMode === 'weapon' ? 0.6 : 0.15,
+              vertexColors: !!hasColors,
+              color: hasColors ? 0xffffff : (currentMode === 'character' ? 0x93c5fd : 0x38bdf8),
+              roughness: currentMode === 'weapon' ? 0.35 : 0.6,
+              metalness: currentMode === 'weapon' ? 0.5 : 0.05,
               wireframe: isWireframe,
               side: THREE.DoubleSide
             });
