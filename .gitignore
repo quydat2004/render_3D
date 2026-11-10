@@ -8,6 +8,7 @@ virtualenv/
 node_modules/
 dist/
 storage/
+log/
 *.glb
 *.obj
 *.ply
