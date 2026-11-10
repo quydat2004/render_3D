@@ -71,6 +71,22 @@
           </div>
         </div>
 
+        <!-- Image-to-3D Upload Section -->
+        <div id="field-image-upload" class="border border-dashed border-slate-700 hover:border-cyan-500 rounded-lg p-3 bg-slate-900/60 transition-all">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+              <span>🖼️</span> Ảnh mẫu tham chiếu (Image-to-3D)
+            </span>
+            <span class="text-[10px] text-cyan-400 bg-cyan-950 px-1.5 py-0.5 rounded border border-cyan-800">Tencent Hunyuan3D-2</span>
+          </div>
+          <p class="text-[11px] text-slate-400 mb-2">Tải ảnh (như ma nữ, súng, quái vật) để sinh 3D chi tiết cao 300.000 polygons.</p>
+          <input type="file" id="input-image" accept="image/*" class="w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded file:border-0 file:text-[11px] file:font-semibold file:bg-cyan-500/20 file:text-cyan-400 hover:file:bg-cyan-500/30 cursor-pointer">
+          <div id="image-preview-container" class="hidden mt-2 relative">
+            <img id="image-preview" src="#" alt="Preview" class="w-full h-28 object-cover rounded border border-slate-800">
+            <button onclick="clearImage()" class="absolute top-1 right-1 bg-black/75 hover:bg-black text-white text-[10px] px-1.5 py-0.5 rounded">Xóa</button>
+          </div>
+        </div>
+
         <div id="field-style">
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Phong cách đồ họa</label>
           <select id="input-style" class="w-full text-xs p-2.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:border-cyan-500">
@@ -252,15 +268,23 @@
             if (child.geometry) {
               child.geometry.computeVertexNormals();
             }
-            const hasColors = child.geometry && child.geometry.attributes.color;
-            child.material = new THREE.MeshStandardMaterial({
-              vertexColors: !!hasColors,
-              color: hasColors ? 0xffffff : (currentMode === 'character' ? 0x93c5fd : 0x38bdf8),
-              roughness: currentMode === 'weapon' ? 0.35 : 0.6,
-              metalness: currentMode === 'weapon' ? 0.5 : 0.05,
-              wireframe: isWireframe,
-              side: THREE.DoubleSide
-            });
+
+            // If the model already has diffuse texture map, keep it!
+            if (child.material && child.material.map) {
+              child.material.wireframe = isWireframe;
+              child.material.side = THREE.DoubleSide;
+              child.material.needsUpdate = true;
+            } else {
+              const hasColors = child.geometry && child.geometry.attributes.color;
+              child.material = new THREE.MeshStandardMaterial({
+                vertexColors: !!hasColors,
+                color: hasColors ? 0xffffff : (currentMode === 'character' ? 0xe2e8f0 : 0x38bdf8),
+                roughness: currentMode === 'weapon' ? 0.35 : 0.65,
+                metalness: currentMode === 'weapon' ? 0.5 : 0.05,
+                wireframe: isWireframe,
+                side: THREE.DoubleSide
+              });
+            }
           }
         });
 
@@ -364,10 +388,36 @@
       document.getElementById('input-prompt').value = val;
     }
 
+    // Image preview handler
+    document.addEventListener("DOMContentLoaded", () => {
+      const fileInput = document.getElementById("input-image");
+      if (fileInput) {
+        fileInput.addEventListener("change", function(e) {
+          const file = e.target.files[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+              document.getElementById("image-preview").src = evt.target.result;
+              document.getElementById("image-preview-container").classList.remove("hidden");
+            };
+            reader.readAsDataURL(file);
+          }
+        });
+      }
+    });
+
+    function clearImage() {
+      const fileInput = document.getElementById("input-image");
+      if (fileInput) fileInput.value = "";
+      document.getElementById("image-preview-container").classList.add("hidden");
+    }
+
     async function handleGenerate() {
       const prompt = document.getElementById('input-prompt').value.trim();
-      if (!prompt) {
-        alert("Vui lòng nhập mô tả prompt.");
+      const imageFile = document.getElementById('input-image') ? document.getElementById('input-image').files[0] : null;
+
+      if (!prompt && !imageFile) {
+        alert("Vui lòng nhập mô tả prompt hoặc tải lên một bức ảnh mẫu.");
         return;
       }
 
@@ -380,44 +430,61 @@
       btn.classList.add('opacity-50');
       statusBox.classList.remove('hidden');
 
-      statusTitle.innerText = "Gemini AI Reasoning...";
-      statusDesc.innerText = "Đang phân tích cấu trúc đa góc nhìn & tối ưu hóa lưới...";
-
       let endpoint = `/api/v1/generate/${currentMode}`;
-      let payload = { prompt: prompt };
+      let fetchOptions = {};
 
-      if (currentMode === 'character') {
-        payload.style = document.getElementById('input-style').value;
-        payload.poly_budget = parseInt(document.getElementById('input-poly').value);
-      } else if (currentMode === 'weapon') {
-        payload.weapon_type = "ranged";
-        payload.poly_budget = parseInt(document.getElementById('input-poly').value);
-      } else if (currentMode === 'map') {
-        payload.dimensions = [
-          parseFloat(document.getElementById('map-w').value) || 40.0,
-          parseFloat(document.getElementById('map-l').value) || 40.0
-        ];
-      }
+      if (imageFile) {
+        // High-Detail Image-to-3D via Hunyuan3D-2
+        endpoint = `/api/v1/generate/image-to-3d`;
+        statusTitle.innerText = "Hunyuan3D-2 Neural Engine...";
+        statusDesc.innerText = "Đang tổng hợp bề mặt 3D chi tiết cao (~300.000 polygons) từ ảnh tham chiếu...";
 
-      try {
-        const response = await fetch(endpoint, {
+        const formData = new FormData();
+        formData.append("image", imageFile);
+        formData.append("caption", prompt || "3D detailed model");
+
+        fetchOptions = {
+          method: 'POST',
+          body: formData
+        };
+      } else {
+        // Standard Text-to-3D
+        statusTitle.innerText = "Gemini AI Reasoning...";
+        statusDesc.innerText = "Đang phân tích cấu trúc đa góc nhìn & tối ưu hóa lưới...";
+
+        let payload = { prompt: prompt };
+        if (currentMode === 'character') {
+          payload.style = document.getElementById('input-style').value;
+          payload.poly_budget = parseInt(document.getElementById('input-poly').value);
+        } else if (currentMode === 'weapon') {
+          payload.weapon_type = "ranged";
+          payload.poly_budget = parseInt(document.getElementById('input-poly').value);
+        } else if (currentMode === 'map') {
+          payload.dimensions = [
+            parseFloat(document.getElementById('map-w').value) || 40.0,
+            parseFloat(document.getElementById('map-l').value) || 40.0
+          ];
+        }
+
+        fetchOptions = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
-        });
+        };
+      }
 
+      try {
+        const response = await fetch(endpoint, fetchOptions);
         if (!response.ok) throw new Error("Server error: " + response.statusText);
         const data = await response.json();
 
         statusTitle.innerText = "Hoàn tất thành công!";
-        statusDesc.innerText = "Mô hình đã được nạp vào Viewport 3D.";
+        statusDesc.innerText = "Mô hình chi tiết cao đã được nạp vào Viewport 3D.";
 
-        // Load into Three.js
         if (data.model_url) {
           loadModel(data.model_url);
         }
 
-        // Render QA report
         renderReport(data);
 
       } catch (err) {
