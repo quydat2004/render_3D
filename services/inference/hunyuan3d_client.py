@@ -197,9 +197,14 @@ class Hunyuan3DClient:
             # 2. Inpaint transparent background with edge color bleeding to prevent white rims
             rgb_clean = rgba_arr[:, :, :3].copy()
             if np.any(alpha == 0):
-                char_mask = alpha > 25
-                med_color = np.median(rgb_clean[char_mask], axis=0) if np.any(char_mask) else [180, 40, 40]
-                rgb_clean[alpha == 0] = med_color
+                try:
+                    import cv2
+                    inpaint_mask = (alpha < 50).astype(np.uint8)
+                    rgb_clean = cv2.inpaint(rgb_clean, inpaint_mask, inpaintRadius=25, flags=cv2.INPAINT_TELEA)
+                except Exception:
+                    char_mask = alpha > 25
+                    med_color = np.median(rgb_clean[char_mask], axis=0) if np.any(char_mask) else [180, 40, 40]
+                    rgb_clean[alpha == 0] = med_color
 
             # 3. Create Dual-Sided Texture Canvas (Front on Left, Back on Right)
             W, H = rgba_pil.width, rgba_pil.height
@@ -217,15 +222,17 @@ class Hunyuan3DClient:
 
             atlas_img = Image.fromarray(dual_canvas, mode="RGB")
 
-            # 4. Proportional Anatomical UV Mapping
+            # 4. Proportional Anatomical UV Mapping (glTF 2.0: V=0 is TOP/Head, V=1 is BOTTOM/Feet)
             verts = mesh.vertices
             # Height fraction (feet=0 to head=1)
             t_y = np.clip((verts[:, 1] - bounds[0][1]) / height, 0.0, 1.0)
-            img_v = np.clip(1.0 - (c_ymax - t_y * char_h) / float(H), 0.0, 1.0)
+            pixel_y = c_ymin + (1.0 - t_y) * char_h
+            img_v = np.clip(pixel_y / float(H), 0.0, 1.0)
 
             # Lateral fraction (left to right)
             t_x = np.clip((verts[:, 0] - bounds[0][0]) / width, 0.0, 1.0)
-            img_u = np.clip((c_xmin + t_x * char_w) / float(W), 0.0, 1.0)
+            pixel_x = c_xmin + t_x * char_w
+            img_u = np.clip(pixel_x / float(W), 0.0, 1.0)
 
             # Front vs Back hemisphere separation
             is_front = verts[:, 2] >= -0.015
@@ -237,7 +244,8 @@ class Hunyuan3DClient:
 
             # Back: right half [0.505, 0.995]
             t_x_back = 1.0 - t_x[~is_front]
-            img_u_back = np.clip((c_xmin + t_x_back * char_w) / float(W), 0.0, 1.0)
+            pixel_x_back = c_xmin + t_x_back * char_w
+            img_u_back = np.clip(pixel_x_back / float(W), 0.0, 1.0)
             uvs[~is_front, 0] = np.clip(0.505 + img_u_back * 0.49, 0.505, 0.995)
             uvs[~is_front, 1] = img_v[~is_front]
 

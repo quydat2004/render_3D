@@ -303,21 +303,29 @@ bpy.ops.export_scene.gltf(
         leg_x = max(sh_x * 0.52, 0.08)
         knee_y = y_hip * 0.50
 
+        # Scan actual foot centroids to avoid inward twisting of ankles & feet
+        feet_m = verts[:, 1] < (y_min + total_h * 0.16)
+        left_feet = verts[feet_m & (verts[:, 0] < -0.01)]
+        right_feet = verts[feet_m & (verts[:, 0] > 0.01)]
+        true_leg_l_x = float(np.median(left_feet[:, 0])) if len(left_feet) > 5 else -leg_x
+        true_leg_r_x = float(np.median(right_feet[:, 0])) if len(right_feet) > 5 else leg_x
+        true_feet_z = float(np.median(verts[feet_m, 2])) if np.any(feet_m) else 0.0
+
         # Dynamic Humanoid 13-Bone Hierarchy
         bone_defs = [
-            ("Hips",       np.array([0.0, y_hip, 0.0], dtype=np.float32),      None, [0.0, y_hip, 0.0]),
-            ("Spine",      np.array([0.0, y_spine, 0.0], dtype=np.float32),    0,    [0.0, y_spine - y_hip, 0.0]),
-            ("Chest",      np.array([0.0, y_chest, 0.0], dtype=np.float32),    1,    [0.0, y_chest - y_spine, 0.0]),
-            ("Neck",       np.array([0.0, y_neck, 0.0], dtype=np.float32),     2,    [0.0, y_neck - y_chest, 0.0]),
-            ("Head",       np.array([0.0, y_head, 0.0], dtype=np.float32),     3,    [0.0, y_head - y_neck, 0.0]),
-            ("UpperArm.L", np.array([-sh_x, y_chest, 0.0], dtype=np.float32),   2,    [-sh_x, 0.0, 0.0]),
-            ("Forearm.L",  np.array([-elbow_x, elbow_y, 0.0], dtype=np.float32),5,    [-(elbow_x - sh_x), elbow_y - y_chest, 0.0]),
-            ("UpperArm.R", np.array([sh_x, y_chest, 0.0], dtype=np.float32),    2,    [sh_x, 0.0, 0.0]),
-            ("Forearm.R",  np.array([elbow_x, elbow_y, 0.0], dtype=np.float32), 7,    [elbow_x - sh_x, elbow_y - y_chest, 0.0]),
-            ("UpperLeg.L", np.array([-leg_x, y_hip - 0.04, 0.0], dtype=np.float32), 0,[-leg_x, -0.04, 0.0]),
-            ("LowerLeg.L", np.array([-leg_x, knee_y, 0.0], dtype=np.float32),   9,    [0.0, knee_y - (y_hip - 0.04), 0.0]),
-            ("UpperLeg.R", np.array([leg_x, y_hip - 0.04, 0.0], dtype=np.float32),  0,[leg_x, -0.04, 0.0]),
-            ("LowerLeg.R", np.array([leg_x, knee_y, 0.0], dtype=np.float32),   11,   [0.0, knee_y - (y_hip - 0.04), 0.0]),
+            ("Hips",       np.array([0.0, y_hip, 0.0], dtype=np.float32),          None, [0.0, y_hip, 0.0]),
+            ("Spine",      np.array([0.0, y_spine, 0.0], dtype=np.float32),        0,    [0.0, y_spine - y_hip, 0.0]),
+            ("Chest",      np.array([0.0, y_chest, 0.0], dtype=np.float32),        1,    [0.0, y_chest - y_spine, 0.0]),
+            ("Neck",       np.array([0.0, y_neck, 0.0], dtype=np.float32),         2,    [0.0, y_neck - y_chest, 0.0]),
+            ("Head",       np.array([0.0, y_head, 0.0], dtype=np.float32),         3,    [0.0, y_head - y_neck, 0.0]),
+            ("UpperArm.L", np.array([-sh_x, y_chest, 0.0], dtype=np.float32),       2,    [-sh_x, 0.0, 0.0]),
+            ("Forearm.L",  np.array([-elbow_x, elbow_y, 0.0], dtype=np.float32),    5,    [-(elbow_x - sh_x), elbow_y - y_chest, 0.0]),
+            ("UpperArm.R", np.array([sh_x, y_chest, 0.0], dtype=np.float32),        2,    [sh_x, 0.0, 0.0]),
+            ("Forearm.R",  np.array([elbow_x, elbow_y, 0.0], dtype=np.float32),     7,    [elbow_x - sh_x, elbow_y - y_chest, 0.0]),
+            ("UpperLeg.L", np.array([true_leg_l_x, y_hip - 0.04, true_feet_z], dtype=np.float32), 0,[true_leg_l_x, -0.04, true_feet_z]),
+            ("LowerLeg.L", np.array([true_leg_l_x, knee_y, true_feet_z], dtype=np.float32),       9,[0.0, knee_y - (y_hip - 0.04), 0.0]),
+            ("UpperLeg.R", np.array([true_leg_r_x, y_hip - 0.04, true_feet_z], dtype=np.float32), 0,[true_leg_r_x, -0.04, true_feet_z]),
+            ("LowerLeg.R", np.array([true_leg_r_x, knee_y, true_feet_z], dtype=np.float32),      11,[0.0, knee_y - (y_hip - 0.04), 0.0]),
         ]
         num_bones = len(bone_defs)
         bone_world_positions = np.array([b[1] for b in bone_defs], dtype=np.float32)
@@ -478,9 +486,9 @@ bpy.ops.export_scene.gltf(
         walk_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         walk_channels.append({"sampler": len(walk_samplers) - 1, "target": {"node": 11 + BONE_NODE_OFFSET, "path": "rotation"}})
 
-        # LowerLeg.L & LowerLeg.R (bones 10 & 12)
-        lower_l_quats = [_axis_angle_to_quat((1, 0, 0), a) for a in [0.0, 0.45, 0.0, 0.02, 0.0]]
-        lower_r_quats = [_axis_angle_to_quat((1, 0, 0), a) for a in [0.0, 0.02, 0.0, 0.45, 0.0]]
+        # LowerLeg.L & LowerLeg.R (bones 10 & 12) - Gentle knee flex
+        lower_l_quats = [_axis_angle_to_quat((1, 0, 0), a) for a in [0.0, 0.22, 0.0, 0.02, 0.0]]
+        lower_r_quats = [_axis_angle_to_quat((1, 0, 0), a) for a in [0.0, 0.02, 0.0, 0.22, 0.0]]
         s_in, s_out = create_sampler(walk_times, lower_l_quats)
         walk_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         walk_channels.append({"sampler": len(walk_samplers) - 1, "target": {"node": 10 + BONE_NODE_OFFSET, "path": "rotation"}})

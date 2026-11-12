@@ -93,3 +93,46 @@ def test_orchestrator_expand_asset_prompt_with_mock():
     assert isinstance(result, OrthographicConceptPrompt)
     assert result.poly_budget == 8000
     assert "rifle" in result.front_prompt.lower()
+
+def test_orchestrator_inspect_visual_alignment_detects_inverted_texture(tmp_path):
+    import numpy as np
+    import trimesh
+    from PIL import Image
+
+    orchestrator = GeminiOrchestrator(offline_mode=True)
+    box = trimesh.creation.box(extents=(0.6, 1.8, 0.4))
+    verts = box.vertices
+    # Intentionally inverted V-coordinates: head (y>0) has V=1.0, feet (y<0) has V=0.0
+    uvs = np.zeros((len(verts), 2), dtype=np.float32)
+    uvs[:, 1] = np.where(verts[:, 1] > 0, 1.0, 0.0)
+    tex_img = Image.new("RGB", (64, 64), (200, 30, 30))
+    box.visual = trimesh.visual.TextureVisuals(uv=uvs, image=tex_img)
+    bad_glb = str(tmp_path / "inverted.glb")
+    box.export(bad_glb)
+
+    qa = orchestrator.inspect_visual_alignment(bad_glb)
+    assert qa.passed is False
+    assert any("inverted" in a.lower() for a in qa.anomalies_detected)
+    assert qa.score <= 50
+
+def test_orchestrator_inspect_visual_alignment_passes_valid_model(tmp_path):
+    import numpy as np
+    import trimesh
+    from PIL import Image
+
+    orchestrator = GeminiOrchestrator(offline_mode=True)
+    box = trimesh.creation.box(extents=(0.6, 1.8, 0.4))
+    verts = box.vertices
+    # Correct glTF V-coordinates: head (y>0) has V=0.0, feet (y<0) has V=1.0
+    uvs = np.zeros((len(verts), 2), dtype=np.float32)
+    uvs[:, 1] = np.where(verts[:, 1] > 0, 0.05, 0.95)
+    tex_img = Image.new("RGB", (64, 64), (200, 30, 30))
+    box.visual = trimesh.visual.TextureVisuals(uv=uvs, image=tex_img)
+    good_glb = str(tmp_path / "valid.glb")
+    box.export(good_glb)
+
+    qa = orchestrator.inspect_visual_alignment(good_glb)
+    assert qa.passed is True
+    assert qa.score >= 85
+    assert len(qa.anomalies_detected) == 0
+

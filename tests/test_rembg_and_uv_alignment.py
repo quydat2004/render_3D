@@ -67,5 +67,5 @@ def test_uv_projection_aligns_to_character_bounds(tmp_path):
     head_mask = verts[:, 1] > 1.5
     assert np.any(head_mask)
     head_uv_v = uvs[head_mask, 1]
-    # In glTF UV space, V near 1.0 is top (head), V near 0 is feet
-    assert np.mean(head_uv_v) > 0.65
+    # In glTF 2.0 specification, V=0.0 is top (head), V=1.0 is bottom (feet)
+    assert np.mean(head_uv_v) < 0.35

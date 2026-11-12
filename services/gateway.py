@@ -1,11 +1,14 @@
 import os
 import uuid
+import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 import trimesh
+
+logger = logging.getLogger(__name__)
 
 from services.common.config import AppSettings
 from services.orchestrator.gemini_orchestrator import (
@@ -126,6 +129,14 @@ def generate_character(req: CharacterRequest):
                 logger.warning(f"Auto-animation step skipped ({e}), serving static neural model.")
                 final_model_url = f"/api/v1/assets/char_clean_{task_id}.glb"
 
+            # Visual QA Pass against concept image
+            concept_img = ASSETS_DIR / f"char_clean_{task_id}_concept.png"
+            final_glb = anim_glb_path if anim_glb_path.exists() else clean_glb_path
+            qa_report = orchestrator.inspect_visual_alignment(
+                model_glb_path=str(final_glb),
+                reference_image_path=str(concept_img) if concept_img.exists() else None
+            )
+
             return {
                 "task_id": task_id,
                 "status": "completed",
@@ -136,12 +147,7 @@ def generate_character(req: CharacterRequest):
                 "static_model_url": f"/api/v1/assets/char_clean_{task_id}.glb",
                 "default_animation": "walk",
                 "animations": ["walk", "idle", "run", "attack"],
-                "qa_report": {
-                    "score": 97,
-                    "passed": True,
-                    "anomalies_detected": [],
-                    "corrective_instructions": f"{poly_count:,} polygon photorealistic neural mesh synthesized via Tencent Hunyuan3D-2 with UV texture projection."
-                }
+                "qa_report": qa_report.model_dump()
             }
         except Exception as e:
             # Fallback to multi-layer anatomical procedural if remote queue exceeds timeout or is busy
@@ -172,8 +178,9 @@ def generate_character(req: CharacterRequest):
         logger.warning(f"Auto-animation step skipped ({e}), serving static procedural model.")
         final_model_url = f"/api/v1/assets/char_clean_{task_id}.glb"
 
-    # 5. Gemini VLM Turntable QA Pass
-    qa_report = orchestrator.inspect_turntable([], AssetType.CHARACTER)
+    # 5. Gemini Visual QA Pass
+    final_glb = anim_glb_path if anim_glb_path.exists() else clean_glb_path
+    qa_report = orchestrator.inspect_visual_alignment(str(final_glb))
 
     return {
         "task_id": task_id,
@@ -304,13 +311,26 @@ def generate_image_to_3d(
     contents = image.file.read()
     temp_img_path.write_bytes(contents)
 
+    # 1. Preprocess uploaded reference image: Remove background (Rembg)
+    clean_img_path = ASSETS_DIR / f"img_clean_{task_id}.png"
+    try:
+        from PIL import Image
+        import io
+        raw_pil = Image.open(io.BytesIO(contents))
+        clean_pil = hunyuan_client.remove_background(raw_pil)
+        clean_pil.save(str(clean_img_path), format="PNG")
+        pipeline_img_path = str(clean_img_path)
+    except Exception as e:
+        logger.warning(f"Background preprocessing fallback ({e}).")
+        pipeline_img_path = str(temp_img_path)
+
     output_glb_path = ASSETS_DIR / f"neural3d_{task_id}.glb"
 
     # Check if Hunyuan3D client is available
     if hunyuan_client.token:
         try:
             hunyuan_client.generate_3d_from_image(
-                image_path=str(temp_img_path),
+                image_path=pipeline_img_path,
                 output_path=str(output_glb_path),
                 caption=caption or "3D character model"
             )
@@ -329,6 +349,13 @@ def generate_image_to_3d(
                 logger.warning(f"Auto-animation for image-to-3d skipped ({e}).")
                 final_model_url = f"/api/v1/assets/neural3d_{task_id}.glb"
 
+            # Visual QA Pass against cleaned reference image
+            final_glb = anim_glb_path if anim_glb_path.exists() else output_glb_path
+            qa_report = orchestrator.inspect_visual_alignment(
+                model_glb_path=str(final_glb),
+                reference_image_path=pipeline_img_path
+            )
+
             return {
                 "task_id": task_id,
                 "status": "completed",
@@ -338,12 +365,7 @@ def generate_image_to_3d(
                 "static_model_url": f"/api/v1/assets/neural3d_{task_id}.glb",
                 "default_animation": "walk",
                 "animations": ["walk", "idle", "run", "attack"],
-                "qa_report": {
-                    "score": 96,
-                    "passed": True,
-                    "anomalies_detected": [],
-                    "corrective_instructions": "Neural surface geometry, auto-rembg texture alignment & humanoid rigging synthesized from reference image."
-                }
+                "qa_report": qa_report.model_dump()
             }
         except Exception as e:
             # Fallback to procedural if Hunyuan3D API fails

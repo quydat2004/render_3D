@@ -74,7 +74,7 @@ def test_generate_character_endpoint(tmp_path):
     assert "model_url" in data
     assert "qa_report" in data
     assert data["qa_report"]["passed"] is True
-    assert data["qa_report"]["score"] == 95
+    assert data["qa_report"]["score"] >= 90
 
 def test_generate_weapon_endpoint():
     payload = {
