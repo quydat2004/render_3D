@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
-from services.gateway import app, orchestrator
+from services.gateway import app, orchestrator, ASSETS_DIR
 from services.orchestrator.gemini_orchestrator import (
     OrthographicConceptPrompt,
     LevelLayoutSchema,
@@ -144,5 +144,30 @@ def test_generate_character_neural_endpoint(monkeypatch):
     assert res_data["status"] == "completed"
     assert "Hunyuan3D-2" in res_data["engine"]
     assert res_data["qa_report"]["score"] >= 96
+
+def test_animate_character_endpoint(tmp_path):
+    # First generate a test mesh in storage/assets
+    import trimesh
+    test_id = "animtest"
+    test_file = ASSETS_DIR / f"char_clean_{test_id}.glb"
+    box = trimesh.creation.box(extents=(0.6, 0.3, 1.75))
+    box.export(str(test_file))
+
+    payload = {
+        "task_id": test_id,
+        "animations": ["walk", "idle", "run", "attack"]
+    }
+    response = client.post("/api/v1/animate-character", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "completed"
+    assert "model_url" in data
+    assert "walk" in data["animations"]
+    assert data["default_animation"] == "walk"
+
+    # Also test alias /api/animate-character
+    alias_resp = client.post("/api/animate-character", json=payload)
+    assert alias_resp.status_code == 200
+
 
 
