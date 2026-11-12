@@ -4,9 +4,35 @@ import numpy as np
 from services.inference.procedural_generator import (
     Procedural3DGenerator,
     CharacterArchetype,
-    WeaponArchetype
+    WeaponArchetype,
+    _smin,
+    _sdf_sphere,
+    _sdf_capsule,
+    _sdf_ellipsoid,
+    _sdf_box
 )
 from services.orchestrator.gemini_orchestrator import OrthographicConceptPrompt
+
+def test_sdf_primitives_and_smin():
+    # 1. Sphere at (0, 0, 0) radius 1.0
+    p = np.array([[[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]]], dtype=np.float32)
+    d_sphere = _sdf_sphere(p, np.array([0.0, 0.0, 0.0]), radius=1.0)
+    assert np.isclose(d_sphere[0, 0], -1.0)  # center is -1.0
+    assert np.isclose(d_sphere[0, 1], 1.0)   # distance 2.0 - 1.0 = 1.0
+
+    # 2. Smooth minimum of two intersecting fields
+    k = 0.1
+    d1 = np.array([0.05], dtype=np.float32)
+    d2 = np.array([0.05], dtype=np.float32)
+    smooth_d = _smin(d1, d2, k=k)
+    # smin(d, d, k) = d - k/4
+    assert np.isclose(smooth_d[0], 0.05 - k / 4.0)
+
+    # 3. Capsule along Z from 0 to 1 with radius 0.2
+    p_cap = np.array([[[0.0, 0.0, 0.5]]], dtype=np.float32)
+    d_cap = _sdf_capsule(p_cap, np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0]), radius=0.2)
+    assert np.isclose(d_cap[0, 0], -0.2)
+
 
 def test_detect_character_archetype():
     gen = Procedural3DGenerator()
@@ -19,6 +45,16 @@ def test_detect_weapon_archetype():
     assert gen.detect_weapon_archetype("Cyberpunk katana neon sword") == WeaponArchetype.SWORD_BLADE
     assert gen.detect_weapon_archetype("Laser sniper rifle with scope") == WeaponArchetype.RIFLE_GUN
     assert gen.detect_weapon_archetype("Battle war hammer") == WeaponArchetype.HAMMER_BLUNT
+
+def test_character_is_seamless_single_manifold():
+    gen = Procedural3DGenerator()
+    mesh = gen.generate_character_mesh("Cyberpunk samurai street warrior")
+    assert isinstance(mesh, trimesh.Trimesh)
+    assert len(mesh.vertices) > 2000
+    assert len(mesh.faces) > 4000
+    # Seamless single manifold mesh: one unified connected component
+    parts = mesh.split(only_watertight=False)
+    assert len(parts) == 1, f"Expected 1 seamless component, got {len(parts)} separate disjoint pieces"
 
 def test_character_has_face_features_and_vertex_colors():
     gen = Procedural3DGenerator()

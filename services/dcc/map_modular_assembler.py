@@ -103,6 +103,7 @@ class ModularMapAssembler:
         safe_out = output_glb.replace("\\", "/")
         inst_list = [i.model_dump() if hasattr(i, "model_dump") else i for i in layout.instances]
         instances_json = json.dumps(inst_list)
+        quoted_json = json.dumps(instances_json)
 
         return f'''import bpy
 import json
@@ -111,7 +112,7 @@ import math
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # 1. Setup asset cache dictionary for Linked Duplicates (mesh_data reuse)
-instances = json.loads('{instances_json}')
+instances = json.loads({quoted_json})
 mesh_cache = {{}}
 
 # 2. Spawn and link instances

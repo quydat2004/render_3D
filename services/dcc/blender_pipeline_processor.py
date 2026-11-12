@@ -37,7 +37,12 @@ import math
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # 1. Import
-bpy.ops.wm.obj_import(filepath="{safe_input}")
+if "{safe_input}".endswith(".ply"):
+    bpy.ops.wm.ply_import(filepath="{safe_input}")
+elif "{safe_input}".endswith(".glb") or "{safe_input}".endswith(".gltf"):
+    bpy.ops.import_scene.gltf(filepath="{safe_input}")
+else:
+    bpy.ops.wm.obj_import(filepath="{safe_input}")
 mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH']
 if not mesh_objs:
     sys.exit(1)
@@ -166,10 +171,18 @@ if "{safe_tt}":
         mesh.remove_unreferenced_vertices()
         mesh.process()
 
+        orig_verts = mesh.vertices.copy()
+        orig_colors = mesh.visual.vertex_colors.copy() if hasattr(mesh.visual, "vertex_colors") and mesh.visual.vertex_colors is not None else None
+
         # 2. Decimate if faces > target_faces
         if len(mesh.faces) > target_faces:
             try:
                 mesh = mesh.simplify_quadric_decimation(face_count=target_faces)
+                if orig_colors is not None and len(orig_colors) == len(orig_verts):
+                    from scipy.spatial import cKDTree
+                    tree = cKDTree(orig_verts)
+                    _, idxs = tree.query(mesh.vertices)
+                    mesh.visual.vertex_colors = orig_colors[idxs]
             except Exception:
                 # If decimation library is unavailable, retain cleaned mesh
                 pass
