@@ -155,10 +155,46 @@
         <button onclick="resetCamera()" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Reset View</button>
       </div>
 
-      <div class="absolute top-4 right-4 z-10">
+      <div class="absolute top-4 right-4 z-10 flex items-center gap-2">
+        <button id="btn-rig-animate" onclick="handleManualRigging()" class="hidden text-xs px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold shadow-lg shadow-cyan-500/25 flex items-center gap-1.5 transition-all">
+          <span>🦴</span>
+          <span>Gắn xương & Chuyển động</span>
+        </button>
         <a id="btn-download" href="#" download class="hidden text-xs px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold shadow-lg shadow-emerald-500/25 flex items-center gap-1.5 transition-all">
           <span>⬇ Tải file (.GLB)</span>
         </a>
+      </div>
+
+      <!-- Floating Animation Controller -->
+      <div id="anim-controller" class="hidden absolute bottom-48 left-1/2 -translate-x-1/2 z-10 glass px-4 py-2 rounded-xl shadow-2xl flex flex-wrap items-center justify-center gap-3 border border-cyan-500/40 backdrop-blur-md">
+        <div class="flex items-center gap-1.5 text-xs font-semibold text-cyan-400">
+          <span class="animate-pulse">🏃</span>
+          <span>Chuyển động:</span>
+        </div>
+
+        <div class="flex items-center gap-1" id="anim-buttons">
+          <button onclick="switchAnimation('walk')" id="btn-anim-walk" class="anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">Bước đi (Walk)</button>
+          <button onclick="switchAnimation('idle')" id="btn-anim-idle" class="anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-300">Đứng thở (Idle)</button>
+          <button onclick="switchAnimation('run')" id="btn-anim-run" class="anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-300">Chạy (Run)</button>
+          <button onclick="switchAnimation('attack')" id="btn-anim-attack" class="anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-300">Tấn công (Attack)</button>
+          <button onclick="switchAnimation('none')" id="btn-anim-none" class="anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-300">T-Pose</button>
+        </div>
+
+        <div class="h-4 w-[1px] bg-slate-700 hidden sm:block"></div>
+
+        <div class="flex items-center gap-2">
+          <!-- Play / Pause -->
+          <button onclick="togglePlayPause()" id="btn-play-pause" class="text-xs px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center gap-1 font-bold" title="Tạm dừng / Tiếp tục">
+            <span id="play-pause-icon">⏸</span>
+          </button>
+
+          <!-- Speed Slider -->
+          <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span>Tốc độ:</span>
+            <input id="anim-speed" type="range" min="0.5" max="2.0" step="0.1" value="1.0" oninput="setAnimSpeed(this.value)" class="w-16 accent-cyan-400 cursor-pointer">
+            <span id="anim-speed-val" class="font-mono text-cyan-400 w-7">1.0x</span>
+          </div>
+        </div>
       </div>
 
       <!-- 3D Canvas -->
@@ -184,6 +220,13 @@
     let scene, camera, renderer, controls, currentMeshGroup, gridHelper;
     let isWireframe = false;
     let currentModelUrl = null;
+
+    // Animation System State
+    let mixer = null;
+    let clock = new THREE.Clock();
+    let currentAction = null;
+    let actions = {};
+    let isPlaying = true;
 
     // Initialize Three.js Scene
     function init3D() {
@@ -288,6 +331,10 @@
 
     function animate() {
       requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (mixer && isPlaying) {
+        mixer.update(delta);
+      }
       controls.update();
       renderer.render(scene, camera);
     }
@@ -491,9 +538,121 @@
         const dl = document.getElementById('btn-download');
         dl.href = url;
         dl.classList.remove('hidden');
+
+        // Setup Animation System
+        const btnRig = document.getElementById('btn-rig-animate');
+        const animCtrl = document.getElementById('anim-controller');
+
+        if (mixer) {
+          mixer.stopAllAction();
+          mixer = null;
+        }
+        actions = {};
+        currentAction = null;
+
+        if (gltf.animations && gltf.animations.length > 0) {
+          mixer = new THREE.AnimationMixer(currentMeshGroup);
+          animCtrl.classList.remove('hidden');
+          if (btnRig) btnRig.classList.add('hidden');
+
+          gltf.animations.forEach((clip) => {
+            const key = clip.name.toLowerCase();
+            actions[key] = mixer.clipAction(clip);
+          });
+
+          // Default to "walk" as requested by user
+          const defaultAnim = actions['walk'] ? 'walk' : Object.keys(actions)[0];
+          switchAnimation(defaultAnim);
+        } else {
+          animCtrl.classList.add('hidden');
+          if (currentMode === 'character' && btnRig) {
+            btnRig.classList.remove('hidden');
+          }
+        }
       }, undefined, (err) => {
         console.error("Error loading GLTF:", err);
       });
+    }
+
+    function switchAnimation(name) {
+      document.querySelectorAll('.anim-btn').forEach(b => {
+        b.className = "anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-slate-800 hover:bg-slate-700 text-slate-300";
+      });
+      const btn = document.getElementById(`btn-anim-${name}`);
+      if (btn) {
+        btn.className = "anim-btn text-xs px-2.5 py-1 rounded-md font-medium bg-cyan-500/20 text-cyan-300 border border-cyan-500/40";
+      }
+
+      if (!mixer) return;
+
+      if (name === 'none') {
+        if (currentAction) {
+          currentAction.fadeOut(0.35);
+          currentAction = null;
+        }
+        return;
+      }
+
+      const nextAction = actions[name];
+      if (!nextAction) return;
+      if (currentAction === nextAction) return;
+
+      const speed = parseFloat(document.getElementById('anim-speed').value) || 1.0;
+      nextAction.reset();
+      nextAction.enabled = true;
+      nextAction.setEffectiveTimeScale(speed);
+      nextAction.setEffectiveWeight(1.0);
+
+      if (currentAction) {
+        currentAction.crossFadeTo(nextAction, 0.35, true);
+      }
+      nextAction.play();
+      currentAction = nextAction;
+      isPlaying = true;
+      document.getElementById('play-pause-icon').innerText = "⏸";
+    }
+
+    function togglePlayPause() {
+      isPlaying = !isPlaying;
+      document.getElementById('play-pause-icon').innerText = isPlaying ? "⏸" : "▶";
+    }
+
+    function setAnimSpeed(val) {
+      const speed = parseFloat(val);
+      document.getElementById('anim-speed-val').innerText = `${speed.toFixed(1)}x`;
+      if (mixer) {
+        mixer.timeScale = speed;
+      }
+    }
+
+    async function handleManualRigging() {
+      if (!currentModelUrl) return;
+      const btnRig = document.getElementById('btn-rig-animate');
+      btnRig.disabled = true;
+      btnRig.classList.add('opacity-50');
+      btnRig.innerText = "Đang gắn xương...";
+
+      try {
+        const resp = await fetch('/api/v1/animate-character', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model_url: currentModelUrl,
+            animations: ["walk", "idle", "run", "attack"]
+          })
+        });
+        if (!resp.ok) throw new Error("Lỗi gắn xương từ server");
+        const data = await resp.json();
+        if (data.model_url) {
+          loadModel(data.model_url);
+        }
+      } catch (err) {
+        alert("Không thể gắn xương: " + err.message);
+      } finally {
+        btnRig.disabled = false;
+        btnRig.classList.remove('opacity-50');
+        btnRig.innerHTML = `<span>🦴</span><span>Gắn xương & Chuyển động</span>`;
+      }
     }
 
     let activeChannel = 'full';
