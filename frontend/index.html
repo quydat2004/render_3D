@@ -390,22 +390,20 @@
 
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i+1], b = data[i+2];
-          // Detect skin vs metal vs dark cloth
+          // Detect skin vs gold metal vs cloth/hair/shoes
           const isSkin = (r > 160 && g > 110 && b > 80 && (r - g) > 15 && (g - b) > 5 && (r - b) < 95);
-          const isGold = (r > 150 && g > 115 && b < 100 && (r - b) > 50);
-          const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
-          const isSteel = (maxC > 140 && (maxC - minC) < 35);
+          const isGold = (r > 160 && g > 125 && b < 80 && (r - b) > 60);
 
-          let metal = 0, rough = 150;
-          if (isGold || isSteel) {
-            metal = 242; // ~0.95 metalness
-            rough = 40;  // 0.16 roughness (mirror polish)
+          let metal = 0, rough = 175; // Default: matte organic cloth/skin/hair
+          if (isGold) {
+            metal = 220; // metallic accent
+            rough = 60;  // satin polish
           } else if (isSkin) {
             metal = 0;
-            rough = 148; // 0.58 roughness (organic skin)
+            rough = 150; // 0.59 roughness (soft organic skin)
           } else {
-            metal = 15;
-            rough = 185; // 0.72 roughness (cloth/leather)
+            metal = 0;   // 0 metalness (cloth, hair, shoes)
+            rough = 180; // 0.70 roughness
           }
 
           roughData.data[i] = rough;
@@ -466,7 +464,7 @@
                   child.material.metalnessMap = pbr.metalnessMap;
                   child.material.metalness = 1.0;
                   child.material.roughness = 1.0;
-                  child.material.envMapIntensity = 2.4;
+                  child.material.envMapIntensity = nameLower.includes("armor") ? 2.2 : 0.8;
                 }
               }
 

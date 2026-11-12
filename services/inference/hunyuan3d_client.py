@@ -90,10 +90,52 @@ class Hunyuan3DClient:
         img.save(str(out), format="PNG")
         return str(out)
 
+    def remove_background(self, img: Image.Image) -> Image.Image:
+        """
+        Removes background padding around character, returning an RGBA image.
+        Uses connected edge flood-fill to protect internal white/gray clothing.
+        """
+        if img.mode == "RGBA":
+            arr = np.array(img)
+            # If image already has alpha channel with transparent background
+            if np.any(arr[:, :, 3] < 200):
+                return img
+
+        img_rgb = img.convert("RGB")
+        arr = np.array(img_rgb)
+        h, w = arr.shape[:2]
+
+        try:
+            import cv2
+            corners = np.vstack([
+                arr[0:min(15, h), 0:min(15, w)].reshape(-1, 3),
+                arr[0:min(15, h), max(0, w-15):w].reshape(-1, 3),
+                arr[max(0, h-15):h, 0:min(15, w)].reshape(-1, 3),
+                arr[max(0, h-15):h, max(0, w-15):w].reshape(-1, 3)
+            ])
+            bg_mean = np.median(corners, axis=0)
+            bg_std = np.std(corners, axis=0) + 1e-4
+
+            diff = np.linalg.norm((arr.astype(np.float32) - bg_mean) / bg_std, axis=2)
+            is_bg_color = (diff < 3.2).astype(np.uint8) * 255
+
+            for pt in [(0, 0), (w-1, 0), (0, h-1), (w-1, h-1), (w//2, 0), (w//2, h-1), (0, h//2), (w-1, h//2)]:
+                if is_bg_color[pt[1], pt[0]] == 255:
+                    cv2.floodFill(is_bg_color, None, pt, 128)
+
+            alpha = np.where(is_bg_color == 128, 0, 255).astype(np.uint8)
+            alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
+            return Image.fromarray(np.dstack([arr, alpha]), mode="RGBA")
+        except Exception as e:
+            logger.warning(f"Background removal fallback ({e}).")
+            return img.convert("RGBA")
+
     def project_texture_to_mesh(self, glb_path: str, image_path: str, output_glb_path: str) -> str:
         """
-        Projects concept image onto the 3D neural mesh geometry, normalizes coordinates to Y-up
-        humanoid scale (~1.8m), and exports a game-ready textured GLB.
+        Projects concept/reference image onto the 3D neural mesh geometry:
+        1. Removes background padding around character (Rembg).
+        2. Detects foreground character bounding box to prevent planar stretching.
+        3. Generates dual-sided UV atlas (Front & Back) with anatomical alignment.
         """
         out_dest = Path(output_glb_path)
         out_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -127,20 +169,88 @@ class Hunyuan3DClient:
                 height = bounds[1][1] - bounds[0][1]
                 width = bounds[1][0] - bounds[0][0]
 
-            # Orthographic / Cylindrical Front Projection UVs
+            # 1. Background removal & foreground character bounding box
+            raw_pil = Image.open(image_path)
+            rgba_pil = self.remove_background(raw_pil)
+            rgba_arr = np.array(rgba_pil)
+
+            alpha = rgba_arr[:, :, 3]
+            opaque_y, opaque_x = np.where(alpha > 25)
+            if len(opaque_y) > 0 and len(opaque_x) > 0:
+                c_ymin, c_ymax = int(opaque_y.min()), int(opaque_y.max())
+                c_xmin, c_xmax = int(opaque_x.min()), int(opaque_x.max())
+            else:
+                c_ymin, c_ymax = 0, rgba_pil.height - 1
+                c_xmin, c_xmax = 0, rgba_pil.width - 1
+
+            # Slight padding around foreground
+            pad_y = max(int((c_ymax - c_ymin) * 0.02), 1)
+            pad_x = max(int((c_xmax - c_xmin) * 0.02), 1)
+            c_ymin = max(0, c_ymin - pad_y)
+            c_ymax = min(rgba_pil.height - 1, c_ymax + pad_y)
+            c_xmin = max(0, c_xmin - pad_x)
+            c_xmax = min(rgba_pil.width - 1, c_xmax + pad_x)
+
+            char_h = max(c_ymax - c_ymin, 1)
+            char_w = max(c_xmax - c_xmin, 1)
+
+            # 2. Inpaint transparent background with edge color bleeding to prevent white rims
+            rgb_clean = rgba_arr[:, :, :3].copy()
+            if np.any(alpha == 0):
+                char_mask = alpha > 25
+                med_color = np.median(rgb_clean[char_mask], axis=0) if np.any(char_mask) else [180, 40, 40]
+                rgb_clean[alpha == 0] = med_color
+
+            # 3. Create Dual-Sided Texture Canvas (Front on Left, Back on Right)
+            W, H = rgba_pil.width, rgba_pil.height
+            dual_canvas = np.zeros((H, W * 2, 3), dtype=np.uint8)
+            dual_canvas[:, :W] = rgb_clean
+            back_half = np.fliplr(rgb_clean)
+            head_h = int(H * 0.35)
+            if head_h > 0:
+                try:
+                    import cv2
+                    back_half[:head_h] = cv2.GaussianBlur(back_half[:head_h], (31, 31), 0)
+                except Exception:
+                    pass
+            dual_canvas[:, W:] = back_half
+
+            atlas_img = Image.fromarray(dual_canvas, mode="RGB")
+
+            # 4. Proportional Anatomical UV Mapping
             verts = mesh.vertices
-            u = (verts[:, 0] - bounds[0][0]) / width
-            v = (verts[:, 1] - bounds[0][1]) / height
-            uvs = np.column_stack([np.clip(u, 0.0, 1.0), np.clip(v, 0.0, 1.0)])
+            # Height fraction (feet=0 to head=1)
+            t_y = np.clip((verts[:, 1] - bounds[0][1]) / height, 0.0, 1.0)
+            img_v = np.clip(1.0 - (c_ymax - t_y * char_h) / float(H), 0.0, 1.0)
 
-            pil_img = Image.open(image_path).convert("RGB")
-            mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, image=pil_img)
+            # Lateral fraction (left to right)
+            t_x = np.clip((verts[:, 0] - bounds[0][0]) / width, 0.0, 1.0)
+            img_u = np.clip((c_xmin + t_x * char_w) / float(W), 0.0, 1.0)
 
-            # Compute vertex normals if missing
+            # Front vs Back hemisphere separation
+            is_front = verts[:, 2] >= -0.015
+            uvs = np.zeros((len(verts), 2), dtype=np.float32)
+
+            # Front: left half [0.005, 0.495]
+            uvs[is_front, 0] = np.clip(0.005 + img_u[is_front] * 0.49, 0.005, 0.495)
+            uvs[is_front, 1] = img_v[is_front]
+
+            # Back: right half [0.505, 0.995]
+            t_x_back = 1.0 - t_x[~is_front]
+            img_u_back = np.clip((c_xmin + t_x_back * char_w) / float(W), 0.0, 1.0)
+            uvs[~is_front, 0] = np.clip(0.505 + img_u_back * 0.49, 0.505, 0.995)
+            uvs[~is_front, 1] = img_v[~is_front]
+
+            mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, image=atlas_img)
+
             if mesh.vertex_normals is None or len(mesh.vertex_normals) != len(mesh.vertices):
                 mesh.compute_vertex_normals()
 
             mesh.export(str(out_dest), file_type="glb")
+            return str(out_dest)
+        except Exception as e:
+            logger.warning(f"Texture projection skipped ({e}). Preserving raw asset.")
+            shutil.copy(glb_path, str(out_dest))
             return str(out_dest)
         except Exception as e:
             logger.warning(f"Texture projection skipped ({e}). Preserving raw asset.")
