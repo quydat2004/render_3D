@@ -72,6 +72,27 @@ def build_humanoid_rig(character_mesh) -> Any:
     center_x = (min_x + max_x) * 0.5
     center_y = (min_y + max_y) * 0.5
 
+    # Silhouette Cross-Section Scan to detect neck & hips for Chibi / Stylized characters
+    mesh_verts_z = [v.co.z for v in character_mesh.data.vertices]
+    z_min = min(mesh_verts_z)
+    z_max = max(mesh_verts_z)
+    height = max(z_max - z_min, 1e-3)
+
+    slices = 30
+    z_steps = [z_min + height * (0.35 + 0.50 * (i / slices)) for i in range(slices)]
+    widths = []
+    dz = height / slices
+    for z_val in z_steps:
+        slice_verts = [v.co.x for v in character_mesh.data.vertices if abs(v.co.z - z_val) < dz]
+        w = (max(slice_verts) - min(slice_verts)) if slice_verts else 1.0
+        widths.append(w)
+    min_w_idx = widths.index(min(widths))
+    z_neck = max(min(z_steps[min_w_idx], z_min + height * 0.86), z_min + height * 0.45)
+    z_head = z_max - (z_max - z_neck) * 0.42
+    z_hip = z_min + (z_neck - z_min) * 0.45
+    z_spine = z_hip + (z_neck - z_hip) * 0.35
+    z_chest = z_hip + (z_neck - z_hip) * 0.70
+
     # Create Armature
     armature_data = bpy.data.armatures.new("Humanoid_Armature")
     armature_obj = bpy.data.objects.new("Armature", armature_data)
@@ -83,64 +104,64 @@ def build_humanoid_rig(character_mesh) -> Any:
 
     # 1. Pelvis / Hips
     hips = edit_bones.new("Hips")
-    hips.head = (center_x, center_y, min_z + height * 0.52)
-    hips.tail = (center_x, center_y, min_z + height * 0.60)
+    hips.head = (center_x, center_y, z_hip)
+    hips.tail = (center_x, center_y, z_spine)
 
     # 2. Spine & Chest
     spine = edit_bones.new("Spine")
     spine.head = hips.tail
-    spine.tail = (center_x, center_y, min_z + height * 0.70)
+    spine.tail = (center_x, center_y, z_chest)
     spine.parent = hips
 
     chest = edit_bones.new("Chest")
     chest.head = spine.tail
-    chest.tail = (center_x, center_y, min_z + height * 0.80)
+    chest.tail = (center_x, center_y, z_neck)
     chest.parent = spine
 
     neck = edit_bones.new("Neck")
     neck.head = chest.tail
-    neck.tail = (center_x, center_y, min_z + height * 0.85)
+    neck.tail = (center_x, center_y, z_neck + (z_head - z_neck) * 0.3)
     neck.parent = chest
 
     head = edit_bones.new("Head")
     head.head = neck.tail
-    head.tail = (center_x, center_y, min_z + height * 1.00)
+    head.tail = (center_x, center_y, z_max)
     head.parent = neck
 
     # 3. Arms
     arm_span = (max_x - min_x) * 0.45
     for sign, side in [(-1.0, "L"), (1.0, "R")]:
         sh = edit_bones.new(f"Shoulder.{side}")
-        sh.head = (center_x + sign * 0.05, center_y, min_z + height * 0.78)
-        sh.tail = (center_x + sign * 0.16, center_y, min_z + height * 0.78)
+        sh.head = (center_x + sign * 0.05, center_y, z_chest)
+        sh.tail = (center_x + sign * 0.16, center_y, z_chest)
         sh.parent = chest
 
         uarm = edit_bones.new(f"UpperArm.{side}")
         uarm.head = sh.tail
-        uarm.tail = (center_x + sign * (0.16 + arm_span * 0.45), center_y, min_z + height * 0.62)
+        uarm.tail = (center_x + sign * (0.16 + arm_span * 0.45), center_y, z_chest - (z_chest - z_hip) * 0.42)
         uarm.parent = sh
 
         larm = edit_bones.new(f"Forearm.{side}")
         larm.head = uarm.tail
-        larm.tail = (center_x + sign * (0.16 + arm_span * 0.85), center_y, min_z + height * 0.46)
+        larm.tail = (center_x + sign * (0.16 + arm_span * 0.85), center_y, z_hip)
         larm.parent = uarm
 
         hand = edit_bones.new(f"Hand.{side}")
         hand.head = larm.tail
-        hand.tail = (center_x + sign * (0.16 + arm_span * 1.00), center_y, min_z + height * 0.40)
+        hand.tail = (center_x + sign * (0.16 + arm_span * 1.00), center_y, z_hip - 0.05)
         hand.parent = larm
 
     # 4. Legs
     leg_x = (max_x - min_x) * 0.22
     for sign, side in [(-1.0, "L"), (1.0, "R")]:
         uleg = edit_bones.new(f"UpperLeg.{side}")
-        uleg.head = (center_x + sign * leg_x, center_y, min_z + height * 0.50)
-        uleg.tail = (center_x + sign * leg_x, center_y, min_z + height * 0.27)
+        uleg.head = (center_x + sign * leg_x, center_y, z_hip)
+        uleg.tail = (center_x + sign * leg_x, center_y, z_hip * 0.50)
         uleg.parent = hips
 
         lleg = edit_bones.new(f"LowerLeg.{side}")
         lleg.head = uleg.tail
-        lleg.tail = (center_x + sign * leg_x, center_y, min_z + height * 0.08)
+        lleg.tail = (center_x + sign * leg_x, center_y, min_z + 0.06)
         lleg.parent = uleg
 
         foot = edit_bones.new(f"Foot.{side}")
@@ -335,8 +356,12 @@ def process_auto_rig_and_animate(input_glb: str, output_glb: str, animations: Li
     bpy.ops.export_scene.gltf(
         filepath=str(out_path),
         export_format='GLB',
+        export_materials='EXPORT',
+        export_image_format='AUTO',
+        export_texcoords=True,
+        export_normals=True,
         export_animations=True,
-        export_all_influences=True,
+        export_all_influences=False,
         export_skins=True,
         export_def_bones=True
     )

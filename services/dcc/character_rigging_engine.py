@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import struct
 import math
@@ -252,36 +253,102 @@ bpy.ops.export_scene.gltf(
         verts = mesh.vertices.astype(np.float32)
         normals = mesh.vertex_normals.astype(np.float32)
 
-        # Standard 13-Bone Humanoid Hierarchy
-        # Nodes: 0: Root, 1: Mesh, 2..14: Bones
+        # Anatomical Silhouette & Cross-Section Scanning for Chibi & Adult Proportions
+        y_min = float(bounds[0][1])
+        y_max = float(bounds[1][1])
+        total_h = max(y_max - y_min, 1e-4)
+
+        slices = 40
+        y_steps = np.linspace(y_min + total_h * 0.35, y_min + total_h * 0.88, slices)
+        slice_h = total_h / slices
+        widths = []
+        for y_val in y_steps:
+            m = np.abs(verts[:, 1] - y_val) < slice_h
+            if np.any(m):
+                w = float(np.max(verts[m, 0]) - np.min(verts[m, 0]))
+            else:
+                w = 1.0
+            widths.append(w)
+        widths = np.array(widths)
+
+        # Neck is local minimum width in upper body
+        neck_idx = int(np.argmin(widths))
+        y_neck = float(y_steps[neck_idx])
+        y_neck = float(np.clip(y_neck, y_min + total_h * 0.42, y_min + total_h * 0.86))
+
+        # Head center
+        y_head = float(y_max - (y_max - y_neck) * 0.42)
+
+        # Hips / Pelvis detection: lowest level where leg gap closes
+        y_hip_search = np.linspace(y_min + total_h * 0.12, y_neck * 0.80, 20)
+        y_hip = y_min + (y_neck - y_min) * 0.45
+        for y_h in y_hip_search:
+            m = np.abs(verts[:, 1] - y_h) < slice_h
+            if np.any(m):
+                if np.any(np.abs(verts[m, 0]) < 0.03):
+                    y_hip = float(y_h)
+                    break
+
+        y_spine = y_hip + (y_neck - y_hip) * 0.32
+        y_chest = y_hip + (y_neck - y_hip) * 0.70
+
+        chest_m = np.abs(verts[:, 1] - y_chest) < slice_h * 1.5
+        torso_w = float(np.max(verts[chest_m, 0]) - np.min(verts[chest_m, 0])) if np.any(chest_m) else 0.4
+        sh_x = max(torso_w * 0.45, 0.10)
+
+        max_x = float(np.max(verts[:, 0]))
+        elbow_x = max(max_x * 0.75, sh_x * 1.35)
+        elbow_y = y_chest - (y_chest - y_hip) * 0.42
+
+        leg_x = max(sh_x * 0.52, 0.08)
+        knee_y = y_hip * 0.50
+
+        # Dynamic Humanoid 13-Bone Hierarchy
         bone_defs = [
-            # (name, world_pos, parent_idx, local_trans)
-            ("Hips",         np.array([0.0, 0.95, 0.0], dtype=np.float32),  None, [0.0, 0.95, 0.0]),
-            ("Spine",        np.array([0.0, 1.15, 0.0], dtype=np.float32),  0,    [0.0, 0.20, 0.0]),
-            ("Chest",        np.array([0.0, 1.35, 0.0], dtype=np.float32),  1,    [0.0, 0.20, 0.0]),
-            ("Neck",         np.array([0.0, 1.55, 0.0], dtype=np.float32),  2,    [0.0, 0.20, 0.0]),
-            ("Head",         np.array([0.0, 1.68, 0.0], dtype=np.float32),  3,    [0.0, 0.13, 0.0]),
-            ("UpperArm.L",   np.array([-0.22, 1.35, 0.0], dtype=np.float32), 2,   [-0.22, 0.0, 0.0]),
-            ("Forearm.L",    np.array([-0.42, 1.12, 0.0], dtype=np.float32), 5,   [-0.20, -0.23, 0.0]),
-            ("UpperArm.R",   np.array([0.22, 1.35, 0.0], dtype=np.float32),  2,    [0.22, 0.0, 0.0]),
-            ("Forearm.R",    np.array([0.42, 1.12, 0.0], dtype=np.float32),  7,    [0.20, -0.23, 0.0]),
-            ("UpperLeg.L",   np.array([-0.11, 0.88, 0.0], dtype=np.float32), 0,   [-0.11, -0.07, 0.0]),
-            ("LowerLeg.L",   np.array([-0.11, 0.45, 0.0], dtype=np.float32), 9,   [0.0, -0.43, 0.0]),
-            ("UpperLeg.R",   np.array([0.11, 0.88, 0.0], dtype=np.float32),  0,    [0.11, -0.07, 0.0]),
-            ("LowerLeg.R",   np.array([0.11, 0.45, 0.0], dtype=np.float32),  11,   [0.0, -0.43, 0.0]),
+            ("Hips",       np.array([0.0, y_hip, 0.0], dtype=np.float32),      None, [0.0, y_hip, 0.0]),
+            ("Spine",      np.array([0.0, y_spine, 0.0], dtype=np.float32),    0,    [0.0, y_spine - y_hip, 0.0]),
+            ("Chest",      np.array([0.0, y_chest, 0.0], dtype=np.float32),    1,    [0.0, y_chest - y_spine, 0.0]),
+            ("Neck",       np.array([0.0, y_neck, 0.0], dtype=np.float32),     2,    [0.0, y_neck - y_chest, 0.0]),
+            ("Head",       np.array([0.0, y_head, 0.0], dtype=np.float32),     3,    [0.0, y_head - y_neck, 0.0]),
+            ("UpperArm.L", np.array([-sh_x, y_chest, 0.0], dtype=np.float32),   2,    [-sh_x, 0.0, 0.0]),
+            ("Forearm.L",  np.array([-elbow_x, elbow_y, 0.0], dtype=np.float32),5,    [-(elbow_x - sh_x), elbow_y - y_chest, 0.0]),
+            ("UpperArm.R", np.array([sh_x, y_chest, 0.0], dtype=np.float32),    2,    [sh_x, 0.0, 0.0]),
+            ("Forearm.R",  np.array([elbow_x, elbow_y, 0.0], dtype=np.float32), 7,    [elbow_x - sh_x, elbow_y - y_chest, 0.0]),
+            ("UpperLeg.L", np.array([-leg_x, y_hip - 0.04, 0.0], dtype=np.float32), 0,[-leg_x, -0.04, 0.0]),
+            ("LowerLeg.L", np.array([-leg_x, knee_y, 0.0], dtype=np.float32),   9,    [0.0, knee_y - (y_hip - 0.04), 0.0]),
+            ("UpperLeg.R", np.array([leg_x, y_hip - 0.04, 0.0], dtype=np.float32),  0,[leg_x, -0.04, 0.0]),
+            ("LowerLeg.R", np.array([leg_x, knee_y, 0.0], dtype=np.float32),   11,   [0.0, knee_y - (y_hip - 0.04), 0.0]),
         ]
         num_bones = len(bone_defs)
         bone_world_positions = np.array([b[1] for b in bone_defs], dtype=np.float32)
 
-        # 1. Compute vertex weights & joints (4 nearest bones)
+        # 1. Compute vertex weights with Anatomical Envelope Protection
         num_verts = len(verts)
-        # Distance matrix (num_verts, num_bones)
         dists = np.linalg.norm(verts[:, np.newaxis, :] - bone_world_positions[np.newaxis, :, :], axis=2)
-        inv_dists = 1.0 / (dists + 0.04)**2.5
+
+        # Envelope Penalties to prevent cross-limb stretching (arms pulling hips or legs pulling chest)
+        below_hip = verts[:, 1] < (y_hip - 0.04)
+        dists[below_hip, 5] += 10.0
+        dists[below_hip, 6] += 10.0
+        dists[below_hip, 7] += 10.0
+        dists[below_hip, 8] += 10.0
+
+        above_chest = verts[:, 1] > (y_chest + 0.02)
+        dists[above_chest, 9] += 10.0
+        dists[above_chest, 10] += 10.0
+        dists[above_chest, 11] += 10.0
+        dists[above_chest, 12] += 10.0
+
+        below_neck = verts[:, 1] < (y_neck - 0.04)
+        dists[below_neck, 4] += 10.0
+
+        inv_dists = 1.0 / (dists + 0.035)**2.5
 
         # Get top 4 bone indices
         top4_joints = np.argsort(-inv_dists, axis=1)[:, :4].astype(np.uint16)
         top4_weights_raw = np.take_along_axis(inv_dists, top4_joints, axis=1).astype(np.float32)
+        # Clean small noise weights
+        top4_weights_raw[top4_weights_raw < 0.04] = 0.0
         weight_sums = np.sum(top4_weights_raw, axis=1, keepdims=True)
         top4_weights = (top4_weights_raw / np.maximum(weight_sums, 1e-6)).astype(np.float32)
 
@@ -433,8 +500,8 @@ bpy.ops.export_scene.gltf(
         walk_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         walk_channels.append({"sampler": len(walk_samplers) - 1, "target": {"node": 7 + BONE_NODE_OFFSET, "path": "rotation"}})
 
-        # Hips vertical bounce
-        hip_trans = [[0.0, 0.95 + 0.015 * math.sin(t * math.pi * 2.0), 0.0] for t in walk_times]
+        # Hips vertical bounce scaled to hip height
+        hip_trans = [[0.0, y_hip + y_hip * 0.015 * math.sin(t * math.pi * 2.0), 0.0] for t in walk_times]
         s_in, s_out = create_sampler(walk_times, hip_trans, val_type="VEC3")
         walk_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         walk_channels.append({"sampler": len(walk_samplers) - 1, "target": {"node": 0 + BONE_NODE_OFFSET, "path": "translation"}})
@@ -450,7 +517,7 @@ bpy.ops.export_scene.gltf(
         idle_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         idle_channels.append({"sampler": len(idle_samplers) - 1, "target": {"node": 2 + BONE_NODE_OFFSET, "path": "rotation"}})
 
-        hips_idle = [[0.0, 0.95 + 0.005 * math.sin(t * math.pi), 0.0] for t in idle_times]
+        hips_idle = [[0.0, y_hip + y_hip * 0.005 * math.sin(t * math.pi), 0.0] for t in idle_times]
         s_in, s_out = create_sampler(idle_times, hips_idle, val_type="VEC3")
         idle_samplers.append({"input": s_in, "output": s_out, "interpolation": "LINEAR"})
         idle_channels.append({"sampler": len(idle_samplers) - 1, "target": {"node": 0 + BONE_NODE_OFFSET, "path": "translation"}})
@@ -527,8 +594,54 @@ bpy.ops.export_scene.gltf(
                 b_node["children"] = children_map[b_idx]
             nodes.append(b_node)
 
-        # 6. Final glTF Structure Assembly
+        # 6. Extract texture image from input mesh and embed into glTF
+        texture_img = None
+        if hasattr(mesh.visual, "material") and mesh.visual.material is not None:
+            mat = mesh.visual.material
+            if hasattr(mat, "baseColorTexture") and mat.baseColorTexture is not None:
+                texture_img = mat.baseColorTexture
+            elif hasattr(mat, "image") and mat.image is not None:
+                texture_img = mat.image
+        if texture_img is None and hasattr(mesh.visual, "image") and mesh.visual.image is not None:
+            texture_img = mesh.visual.image
+
+        img_bv_idx = None
+        if texture_img is not None:
+            try:
+                buf = io.BytesIO()
+                texture_img.convert("RGB").save(buf, format="PNG")
+                img_bytes = buf.getvalue()
+
+                offset = sum(len(b) for b in bin_chunks)
+                pad = (4 - (len(img_bytes) % 4)) % 4
+                padded_img_bytes = img_bytes + b'\x00' * pad
+
+                img_bv_idx = len(buffer_views)
+                buffer_views.append({
+                    "buffer": 0,
+                    "byteOffset": offset,
+                    "byteLength": len(img_bytes)
+                })
+                bin_chunks.append(padded_img_bytes)
+            except Exception as e:
+                logger.warning(f"Could not encode texture image ({e}).")
+
+        # 7. Final glTF Structure Assembly
         bin_payload = b"".join(bin_chunks)
+
+        mesh_primitive = {
+            "attributes": {
+                "POSITION": acc_pos,
+                "NORMAL": acc_norm,
+                "TEXCOORD_0": acc_uv,
+                "JOINTS_0": acc_joints,
+                "WEIGHTS_0": acc_weights
+            },
+            "indices": acc_indices,
+            "mode": 4
+        }
+        if img_bv_idx is not None:
+            mesh_primitive["material"] = 0
 
         gltf_dict = {
             "asset": {"version": "2.0", "generator": "Render3D Character Rigging Engine"},
@@ -537,17 +650,7 @@ bpy.ops.export_scene.gltf(
             "nodes": nodes,
             "meshes": [{
                 "name": "Character_Mesh",
-                "primitives": [{
-                    "attributes": {
-                        "POSITION": acc_pos,
-                        "NORMAL": acc_norm,
-                        "TEXCOORD_0": acc_uv,
-                        "JOINTS_0": acc_joints,
-                        "WEIGHTS_0": acc_weights
-                    },
-                    "indices": acc_indices,
-                    "mode": 4
-                }]
+                "primitives": [mesh_primitive]
             }],
             "skins": [{
                 "name": "Humanoid_Skin",
@@ -559,6 +662,31 @@ bpy.ops.export_scene.gltf(
             "bufferViews": buffer_views,
             "buffers": [{"byteLength": len(bin_payload)}]
         }
+
+        if img_bv_idx is not None:
+            gltf_dict["images"] = [{
+                "bufferView": img_bv_idx,
+                "mimeType": "image/png"
+            }]
+            gltf_dict["samplers"] = [{
+                "magFilter": 9729,
+                "minFilter": 9987,
+                "wrapS": 10497,
+                "wrapT": 10497
+            }]
+            gltf_dict["textures"] = [{
+                "sampler": 0,
+                "source": 0
+            }]
+            gltf_dict["materials"] = [{
+                "name": "Character_Material",
+                "pbrMetallicRoughness": {
+                    "baseColorTexture": {"index": 0},
+                    "metallicFactor": 0.02,
+                    "roughnessFactor": 0.65
+                },
+                "doubleSided": True
+            }]
 
         # Pack GLB binary format
         json_bytes = json.dumps(gltf_dict, separators=(',', ':')).encode("utf-8")

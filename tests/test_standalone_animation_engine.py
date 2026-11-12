@@ -43,3 +43,31 @@ def test_rig_and_animate_character_creates_glb(tmp_path):
     assert "idle" in anim_names
     assert "run" in anim_names
     assert "attack" in anim_names
+
+def test_rig_and_animate_preserves_materials_and_textures(tmp_path):
+    from PIL import Image
+    import numpy as np
+    import json
+    import struct
+
+    engine = CharacterRiggingEngine()
+    box = trimesh.creation.box(extents=(0.6, 0.3, 1.75))
+    tex_img = Image.new("RGB", (64, 64), (220, 30, 30))
+    uvs = np.zeros((len(box.vertices), 2), dtype=np.float32)
+    box.visual = trimesh.visual.TextureVisuals(uv=uvs, image=tex_img)
+    input_glb = str(tmp_path / "textured_in.glb")
+    box.export(input_glb)
+
+    output_glb = str(tmp_path / "textured_out.glb")
+    engine.rig_and_animate_character(input_glb, output_glb)
+
+    data = Path(output_glb).read_bytes()
+    chunk_len, _ = struct.unpack("<II", data[12:20])
+    gltf = json.loads(data[20:20+chunk_len].decode("utf-8"))
+
+    assert "materials" in gltf, "glTF must preserve materials"
+    assert len(gltf["materials"]) > 0
+    assert "textures" in gltf, "glTF must preserve textures"
+    assert "images" in gltf, "glTF must embed texture images"
+    assert gltf["meshes"][0]["primitives"][0].get("material") is not None
+
