@@ -87,6 +87,15 @@
           </div>
         </div>
 
+        <div id="field-engine">
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Bộ sinh 3D (Engine)</label>
+          <select id="input-engine" class="w-full text-xs p-2.5 rounded-lg bg-slate-900 border border-slate-700 text-cyan-300 focus:outline-none focus:border-cyan-500">
+            <option value="neural" selected>⚡ Tencent Hunyuan3D-2 (AI Neural 250K+ Polys)</option>
+            <option value="auto">Tự động (Neural AI + Multi-Layer Fallback)</option>
+            <option value="multi_layer">📐 Multi-Layer PBR Studio (3 Lớp Lưới + 2K PBR)</option>
+          </select>
+        </div>
+
         <div id="field-style">
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Phong cách đồ họa</label>
           <select id="input-style" class="w-full text-xs p-2.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:border-cyan-500">
@@ -137,10 +146,13 @@
     <!-- Center Viewport (3D WebGL) -->
     <main class="flex-1 relative flex flex-col">
       <!-- Toolbar -->
-      <div class="absolute top-4 left-4 z-10 flex gap-2 glass p-1.5 rounded-lg shadow-xl">
-        <button onclick="toggleWireframe()" id="btn-wire" class="text-xs px-3 py-1.5 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Wireframe</button>
-        <button onclick="toggleGrid()" id="btn-grid" class="text-xs px-3 py-1.5 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Lưới sàn</button>
-        <button onclick="resetCamera()" class="text-xs px-3 py-1.5 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Reset View</button>
+      <div class="absolute top-4 left-4 z-10 flex flex-wrap gap-1.5 glass p-1.5 rounded-lg shadow-xl">
+        <button onclick="setChannel('full')" id="btn-chan-full" class="text-xs px-2.5 py-1 rounded font-medium bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">PBR Đầy đủ</button>
+        <button onclick="setChannel('albedo')" id="btn-chan-albedo" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Albedo</button>
+        <button onclick="setChannel('normal')" id="btn-chan-normal" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Normal Map</button>
+        <button onclick="toggleWireframe()" id="btn-wire" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Wireframe</button>
+        <button onclick="toggleGrid()" id="btn-grid" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Lưới sàn</button>
+        <button onclick="resetCamera()" class="text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Reset View</button>
       </div>
 
       <div class="absolute top-4 right-4 z-10">
@@ -184,31 +196,83 @@
       camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
       camera.position.set(0, 1.5, 3.5);
 
-      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, powerPreference: "high-performance" });
       renderer.setSize(container.clientWidth, container.clientHeight);
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.outputEncoding = THREE.sRGBEncoding;
 
       controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
       controls.target.set(0, 0.8, 0);
 
-      // Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+      // Balanced Cinematic Studio Lights (Prevent blown out overexposure)
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
       scene.add(ambientLight);
 
-      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x1e293b, 1.0);
+      const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.35);
       scene.add(hemiLight);
 
-      const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
-      dirLight.position.set(5, 12, 8);
+      // Key light with soft shadow
+      const dirLight = new THREE.DirectionalLight(0xfff7ed, 1.6);
+      dirLight.position.set(4, 9, 6);
       dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.bias = -0.0005;
       scene.add(dirLight);
 
-      const frontLight = new THREE.DirectionalLight(0x00f0ff, 0.7);
-      frontLight.position.set(0, 2, 5);
-      scene.add(frontLight);
+      // Rim light from behind (Cool cyan backlight for horror silhouette)
+      const rimLight = new THREE.DirectionalLight(0x38bdf8, 1.3);
+      rimLight.position.set(-4, 5, -6);
+      scene.add(rimLight);
+
+      // Soft fill light
+      const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+      fillLight.position.set(0, 1, 4);
+      scene.add(fillLight);
+
+      // Studio HDR PMREM Environment with multi-directional softboxes & dark floor grounding
+      try {
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        pmremGenerator.compileEquirectangularShader();
+        const envScene = new THREE.Scene();
+        envScene.background = new THREE.Color(0x0a0f1d);
+
+        // Key Softbox Light (Warm daylight, high-intensity overhead 45-deg)
+        const pKey = new THREE.Mesh(new THREE.PlaneGeometry(16, 16), new THREE.MeshBasicMaterial({ color: 0xfff3e0 }));
+        pKey.position.set(5, 12, 7);
+        pKey.lookAt(0, 0, 0);
+        envScene.add(pKey);
+
+        // Cool Fill Softbox (Subtle cyan sky fill)
+        const pFill = new THREE.Mesh(new THREE.PlaneGeometry(12, 14), new THREE.MeshBasicMaterial({ color: 0x93c5fd }));
+        pFill.position.set(-10, 6, -6);
+        pFill.lookAt(0, 0, 0);
+        envScene.add(pFill);
+
+        // Pure White Intense Rim Strip (Specular edge glint)
+        const pRim = new THREE.Mesh(new THREE.PlaneGeometry(18, 5), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+        pRim.position.set(0, 10, -9);
+        pRim.lookAt(0, 0, 0);
+        envScene.add(pRim);
+
+        // Dark Floor Reflector to ground specular reflection
+        const pFloor = new THREE.Mesh(new THREE.PlaneGeometry(25, 25), new THREE.MeshBasicMaterial({ color: 0x050811 }));
+        pFloor.position.set(0, -0.5, 0);
+        pFloor.rotation.x = -Math.PI / 2;
+        envScene.add(pFloor);
+
+        const envTarget = pmremGenerator.fromScene(envScene, 0.04);
+        scene.environment = envTarget.texture;
+        pmremGenerator.dispose();
+      } catch (e) {
+        console.warn("PMREM environment generation skipped:", e);
+      }
 
       // Grid
       gridHelper = new THREE.GridHelper(10, 20, 0x00f0ff, 0x1e293b);
@@ -253,6 +317,78 @@
       scene.add(currentMeshGroup);
     }
 
+    function generatePBRMapsFromAlbedo(texture) {
+      if (!texture || !texture.image) return null;
+      try {
+        const img = texture.image;
+        if (!img.width || !img.height) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(img.width, 1024);
+        canvas.height = Math.min(img.height, 1024);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+        const roughCanvas = document.createElement('canvas');
+        roughCanvas.width = canvas.width;
+        roughCanvas.height = canvas.height;
+        const roughCtx = roughCanvas.getContext('2d');
+        const roughData = roughCtx.createImageData(canvas.width, canvas.height);
+
+        const metalCanvas = document.createElement('canvas');
+        metalCanvas.width = canvas.width;
+        metalCanvas.height = canvas.height;
+        const metalCtx = metalCanvas.getContext('2d');
+        const metalData = metalCtx.createImageData(canvas.width, canvas.height);
+
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i+1], b = data[i+2];
+          // Detect skin vs metal vs dark cloth
+          const isSkin = (r > 160 && g > 110 && b > 80 && (r - g) > 15 && (g - b) > 5 && (r - b) < 95);
+          const isGold = (r > 150 && g > 115 && b < 100 && (r - b) > 50);
+          const maxC = Math.max(r, g, b), minC = Math.min(r, g, b);
+          const isSteel = (maxC > 140 && (maxC - minC) < 35);
+
+          let metal = 0, rough = 150;
+          if (isGold || isSteel) {
+            metal = 242; // ~0.95 metalness
+            rough = 40;  // 0.16 roughness (mirror polish)
+          } else if (isSkin) {
+            metal = 0;
+            rough = 148; // 0.58 roughness (organic skin)
+          } else {
+            metal = 15;
+            rough = 185; // 0.72 roughness (cloth/leather)
+          }
+
+          roughData.data[i] = rough;
+          roughData.data[i+1] = rough;
+          roughData.data[i+2] = rough;
+          roughData.data[i+3] = 255;
+
+          metalData.data[i] = metal;
+          metalData.data[i+1] = metal;
+          metalData.data[i+2] = metal;
+          metalData.data[i+3] = 255;
+        }
+
+        roughCtx.putImageData(roughData, 0, 0);
+        metalCtx.putImageData(metalData, 0, 0);
+
+        const roughTex = new THREE.CanvasTexture(roughCanvas);
+        const metalTex = new THREE.CanvasTexture(metalCanvas);
+        roughTex.flipY = texture.flipY;
+        metalTex.flipY = texture.flipY;
+        roughTex.needsUpdate = true;
+        metalTex.needsUpdate = true;
+
+        return { roughnessMap: roughTex, metalnessMap: metalTex };
+      } catch (e) {
+        console.warn("PBR auto-separation skipped:", e);
+        return null;
+      }
+    }
+
     function loadModel(url) {
       currentModelUrl = url;
       const loader = new THREE.GLTFLoader();
@@ -265,14 +401,55 @@
           if (child.isMesh) {
             child.castShadow = true;
             child.receiveShadow = true;
-            if (child.geometry) {
+            const nameLower = (child.name || "").toLowerCase();
+            if (child.geometry && !nameLower.includes("armor")) {
               child.geometry.computeVertexNormals();
             }
 
-            // If the model already has diffuse texture map, keep it!
-            if (child.material && child.material.map) {
+            // Preserve PBR materials and enable Alpha Clipping
+            if (child.material) {
               child.material.wireframe = isWireframe;
               child.material.side = THREE.DoubleSide;
+
+              // Auto-generate PBR roughness & metalness maps for textured neural/procedural meshes
+              if (child.material.map && !child.material.roughnessMap) {
+                const pbr = generatePBRMapsFromAlbedo(child.material.map);
+                if (pbr) {
+                  child.material.roughnessMap = pbr.roughnessMap;
+                  child.material.metalnessMap = pbr.metalnessMap;
+                  child.material.metalness = 1.0;
+                  child.material.roughness = 1.0;
+                  child.material.envMapIntensity = 2.4;
+                }
+              }
+
+              // Metal Armor: Genuine polished reflection, disable salt-and-pepper noise
+              if (nameLower.includes("armor") || child.material.metalness > 0.5) {
+                child.material.metalness = 0.95;
+                child.material.roughness = 0.16;
+                child.material.envMapIntensity = 2.4;
+                if (!child.material.metalnessMap) child.material.roughnessMap = null;
+                if (child.material.normalMap) {
+                  child.material.normalScale.set(0.15, 0.15); // Smooth clean plates
+                }
+              } else if (nameLower.includes("hair") || nameLower.includes("cloth") || (child.material.map && child.material.map.format === THREE.RGBAFormat)) {
+                child.material.alphaTest = 0.5;
+                child.material.transparent = false;
+                child.material.depthWrite = true;
+                child.material.depthTest = true;
+                child.material.envMapIntensity = 0.7;
+              } else if (!child.material.roughnessMap) {
+                // Skin
+                child.material.metalness = 0.0;
+                child.material.roughness = 0.58;
+                child.material.envMapIntensity = 0.5;
+              }
+
+              // Store original maps for debug channel toggles
+              child.userData.origMap = child.material.map;
+              child.userData.origNormalMap = child.material.normalMap;
+              child.userData.origRoughnessMap = child.material.roughnessMap;
+
               child.material.needsUpdate = true;
             } else {
               const hasColors = child.geometry && child.geometry.attributes.color;
@@ -316,6 +493,42 @@
         dl.classList.remove('hidden');
       }, undefined, (err) => {
         console.error("Error loading GLTF:", err);
+      });
+    }
+
+    let activeChannel = 'full';
+    function setChannel(ch) {
+      activeChannel = ch;
+      ['full', 'albedo', 'normal'].forEach(name => {
+        const btn = document.getElementById(`btn-chan-${name}`);
+        if (btn) {
+          if (name === ch) {
+            btn.className = "text-xs px-2.5 py-1 rounded font-medium bg-cyan-500/20 text-cyan-400 border border-cyan-500/30";
+          } else {
+            btn.className = "text-xs px-2.5 py-1 rounded font-medium bg-slate-800 hover:bg-slate-700 text-slate-200";
+          }
+        }
+      });
+
+      if (!currentMeshGroup) return;
+
+      currentMeshGroup.traverse((child) => {
+        if (child.isMesh && child.material) {
+          if (ch === 'full') {
+            child.material.map = child.userData.origMap || null;
+            child.material.normalMap = child.userData.origNormalMap || null;
+            child.material.roughnessMap = child.userData.origRoughnessMap || null;
+          } else if (ch === 'albedo') {
+            child.material.map = child.userData.origMap || null;
+            child.material.normalMap = null;
+            child.material.roughnessMap = null;
+          } else if (ch === 'normal') {
+            child.material.map = child.userData.origNormalMap || null;
+            child.material.normalMap = null;
+            child.material.roughnessMap = null;
+          }
+          child.material.needsUpdate = true;
+        }
       });
     }
 
@@ -456,6 +669,12 @@
         if (currentMode === 'character') {
           payload.style = document.getElementById('input-style').value;
           payload.poly_budget = parseInt(document.getElementById('input-poly').value);
+          const engineVal = document.getElementById('input-engine') ? document.getElementById('input-engine').value : 'auto';
+          payload.engine = engineVal;
+          if (engineVal === 'neural') {
+            statusTitle.innerText = "Tencent Hunyuan3D-2 AI...";
+            statusDesc.innerText = "Đang tổng hợp bề mặt Neural 3D chi tiết cao 300.000 polygons từ text prompt...";
+          }
         } else if (currentMode === 'weapon') {
           payload.weapon_type = "ranged";
           payload.poly_budget = parseInt(document.getElementById('input-poly').value);
