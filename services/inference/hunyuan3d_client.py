@@ -98,49 +98,54 @@ class Hunyuan3DClient:
         out_dest = Path(output_glb_path)
         out_dest.parent.mkdir(parents=True, exist_ok=True)
 
-        scene = trimesh.load(glb_path)
-        if isinstance(scene, trimesh.Scene):
-            geoms = list(scene.geometry.values())
-            if not geoms:
-                raise ValueError("GLB has no geometry.")
-            mesh = trimesh.util.concatenate(geoms) if len(geoms) > 1 else geoms[0].copy()
-        else:
-            mesh = scene.copy()
+        try:
+            scene = trimesh.load(glb_path)
+            if isinstance(scene, trimesh.Scene):
+                geoms = list(scene.geometry.values())
+                if not geoms:
+                    raise ValueError("GLB has no geometry.")
+                mesh = trimesh.util.concatenate(geoms) if len(geoms) > 1 else geoms[0].copy()
+            else:
+                mesh = scene.copy()
 
-        # Center on X & Z; ground to Y=0
-        bounds = mesh.bounds
-        center_x = (bounds[0][0] + bounds[1][0]) * 0.5
-        center_z = (bounds[0][2] + bounds[1][2]) * 0.5
-        min_y = bounds[0][1]
-        mesh.apply_translation([-center_x, -min_y, -center_z])
-
-        bounds = mesh.bounds
-        height = max(bounds[1][1] - bounds[0][1], 1e-4)
-        width = max(bounds[1][0] - bounds[0][0], 1e-4)
-
-        # Scale to standard humanoid height (1.80m)
-        if height < 0.5 or height > 5.0:
-            scale = 1.80 / height
-            mesh.apply_scale(scale)
+            # Center on X & Z; ground to Y=0
             bounds = mesh.bounds
-            height = bounds[1][1] - bounds[0][1]
-            width = bounds[1][0] - bounds[0][0]
+            center_x = (bounds[0][0] + bounds[1][0]) * 0.5
+            center_z = (bounds[0][2] + bounds[1][2]) * 0.5
+            min_y = bounds[0][1]
+            mesh.apply_translation([-center_x, -min_y, -center_z])
 
-        # Orthographic / Cylindrical Front Projection UVs
-        verts = mesh.vertices
-        u = (verts[:, 0] - bounds[0][0]) / width
-        v = (verts[:, 1] - bounds[0][1]) / height
-        uvs = np.column_stack([np.clip(u, 0.0, 1.0), np.clip(v, 0.0, 1.0)])
+            bounds = mesh.bounds
+            height = max(bounds[1][1] - bounds[0][1], 1e-4)
+            width = max(bounds[1][0] - bounds[0][0], 1e-4)
 
-        pil_img = Image.open(image_path).convert("RGB")
-        mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, image=pil_img)
+            # Scale to standard humanoid height (1.80m)
+            if height < 0.5 or height > 5.0:
+                scale = 1.80 / height
+                mesh.apply_scale(scale)
+                bounds = mesh.bounds
+                height = bounds[1][1] - bounds[0][1]
+                width = bounds[1][0] - bounds[0][0]
 
-        # Compute vertex normals if missing
-        if mesh.vertex_normals is None or len(mesh.vertex_normals) != len(mesh.vertices):
-            mesh.compute_vertex_normals()
+            # Orthographic / Cylindrical Front Projection UVs
+            verts = mesh.vertices
+            u = (verts[:, 0] - bounds[0][0]) / width
+            v = (verts[:, 1] - bounds[0][1]) / height
+            uvs = np.column_stack([np.clip(u, 0.0, 1.0), np.clip(v, 0.0, 1.0)])
 
-        mesh.export(str(out_dest), file_type="glb")
-        return str(out_dest)
+            pil_img = Image.open(image_path).convert("RGB")
+            mesh.visual = trimesh.visual.TextureVisuals(uv=uvs, image=pil_img)
+
+            # Compute vertex normals if missing
+            if mesh.vertex_normals is None or len(mesh.vertex_normals) != len(mesh.vertices):
+                mesh.compute_vertex_normals()
+
+            mesh.export(str(out_dest), file_type="glb")
+            return str(out_dest)
+        except Exception as e:
+            logger.warning(f"Texture projection skipped ({e}). Preserving raw asset.")
+            shutil.copy(glb_path, str(out_dest))
+            return str(out_dest)
 
     def generate_3d_from_image(
         self,

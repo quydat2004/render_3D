@@ -103,3 +103,46 @@ def test_generate_map_endpoint():
     assert data["asset_type"] == "environment"
     assert "navmesh" in data
     assert len(data["classified_props"]) > 0
+
+def test_get_asset_path_traversal_blocked():
+    # Attempt to traverse outside storage/assets
+    response = client.get("/api/v1/assets/../../api-key.txt")
+    assert response.status_code in [404, 400]
+
+def test_generate_image_to_3d_endpoint():
+    # Upload dummy image
+    image_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00\xff\xdb\x00C\x00"
+    files = {"image": ("test.jpg", image_bytes, "image/jpeg")}
+    data = {"caption": "Test character from reference image"}
+    response = client.post("/api/v1/generate/image-to-3d", files=files, data=data)
+    assert response.status_code == 200
+    res_data = response.json()
+    assert res_data["status"] == "completed"
+    assert "model_url" in res_data
+    assert "qa_report" in res_data
+
+def test_generate_character_neural_endpoint(monkeypatch):
+    import trimesh
+    from services.gateway import hunyuan_client
+
+    def mock_gen_text(caption, output_path, steps=15, timeout=120):
+        mesh = trimesh.creation.box(extents=(1, 2, 0.5))
+        mesh.export(output_path)
+        return output_path
+
+    monkeypatch.setattr(hunyuan_client, "generate_3d_from_text", mock_gen_text)
+    monkeypatch.setattr(hunyuan_client, "token", "mock_token")
+
+    payload = {
+        "prompt": "Realistic golden knight in plate armor",
+        "style": "Game-Ready Realistic",
+        "engine": "neural"
+    }
+    response = client.post("/api/v1/generate/character", json=payload)
+    assert response.status_code == 200
+    res_data = response.json()
+    assert res_data["status"] == "completed"
+    assert "Hunyuan3D-2" in res_data["engine"]
+    assert res_data["qa_report"]["score"] >= 96
+
+
