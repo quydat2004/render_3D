@@ -27,12 +27,12 @@ TEXTURE_SOURCE_FALLBACK = "flat_color_fallback"
 
 class Hunyuan3DClient:
     SPACE_CANDIDATES = [
-        "https://tencent-hunyuan3d-2-1.hf.space",
         "https://tencent-hunyuan3d-2.hf.space",
-        "tencent/Hunyuan3D-2.1",
-        "tencent/Hunyuan3D-2"
+        "tencent/Hunyuan3D-2",
+        "https://tencent-hunyuan3d-2-1.hf.space",
+        "tencent/Hunyuan3D-2.1"
     ]
-    SPACE_ID = "https://tencent-hunyuan3d-2-1.hf.space"
+    SPACE_ID = "https://tencent-hunyuan3d-2.hf.space"
     PAINT_SPACE_ID = "Upsampler/hunyuan3d-paint"
 
     def __init__(self, token: Optional[str] = None):
@@ -292,12 +292,12 @@ class Hunyuan3DClient:
                 elif side < 768:
                     square = square.resize((768, 768), Image.Resampling.LANCZOS)
 
-                # High-frequency 2D edge & contrast enhancement for DiT neural shape conditioning
+                # Gentle 2D edge & contrast enhancement for DiT neural shape conditioning
                 from PIL import ImageFilter, ImageEnhance
                 alpha_ch = square.split()[3]
                 rgb_sharp = square.convert("RGB")
-                rgb_sharp = ImageEnhance.Contrast(rgb_sharp).enhance(1.15)
-                rgb_sharp = rgb_sharp.filter(ImageFilter.UnsharpMask(radius=2, percent=160, threshold=2))
+                rgb_sharp = ImageEnhance.Contrast(rgb_sharp).enhance(1.06)
+                rgb_sharp = rgb_sharp.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=3))
                 clean = Image.merge("RGBA", (*rgb_sharp.split(), alpha_ch))
 
             clean_path = out_dir / f"{stem}_nobg.png"
@@ -719,6 +719,109 @@ class Hunyuan3DClient:
         out_mesh.export(str(out), file_type="glb")
         return str(out)
 
+    def _fetch_raw_neural_shape(
+        self,
+        clean_image: str,
+        caption: str = "Masterpiece 3D character sculpt, highly defined sharp facial contours, crisp eye sockets, distinct nose and mouth, clean anatomical geometry, deep clean garment folds, ZBrush high-poly digital sculpt, ultra-sharp geometric details, game-ready",
+        steps: int = 30,
+        timeout: int = 180
+    ) -> str:
+        """
+        Submits shape generation with automatic multi-space and anonymous failover,
+        preventing ZeroGPU runs limit exceptions from aborting generation.
+        """
+        img_arg = handle_file(clean_image) if handle_file else clean_image
+
+        candidate_spaces = [
+            ("https://tencent-hunyuan3d-2.hf.space", self.token),
+            ("tencent/Hunyuan3D-2", self.token),
+            ("https://tencent-hunyuan3d-2.hf.space", None),
+            ("https://tencent-hunyuan3d-2-1.hf.space", self.token),
+            ("tencent/Hunyuan3D-2.1", self.token),
+            ("https://tencent-hunyuan3d-2-1.hf.space", None),
+        ]
+
+        if self._client is not None:
+            candidate_spaces.insert(0, (self._client, None))
+
+        errors = []
+        for space_or_cli, token_val in candidate_spaces:
+            space_desc = space_or_cli if isinstance(space_or_cli, str) else "injected_client"
+            try:
+                if isinstance(space_or_cli, str):
+                    cli = Client(space_or_cli, token=token_val)
+                else:
+                    cli = space_or_cli
+
+                # 1. Try /shape_generation
+                try:
+                    job = self._submit_call(
+                        cli,
+                        api_name="/shape_generation",
+                        caption=caption,
+                        image=img_arg,
+                        mv_image_front=None,
+                        mv_image_back=None,
+                        mv_image_left=None,
+                        mv_image_right=None,
+                        steps=steps,
+                        guidance_scale=5.5,
+                        seed=42,
+                        octree_resolution=256,
+                        check_box_rembg=False,
+                        num_chunks=8000,
+                        randomize_seed=False
+                    )
+                    start = time.time()
+                    while not job.done():
+                        if time.time() - start > timeout:
+                            raise TimeoutError(f"Timeout {timeout}s on {space_desc}")
+                        time.sleep(2)
+                    res = job.result()
+                    item = res[0] if isinstance(res, (list, tuple)) else res
+                    raw_src = item["value"] if isinstance(item, dict) else str(item)
+                    if Path(raw_src).exists() and Path(raw_src).stat().st_size > 0:
+                        logger.info(f"Successfully generated 3D shape from {space_desc}")
+                        return raw_src
+                except Exception as shape_err:
+                    err_msg = str(shape_err)
+                    if "ZeroGPU" in err_msg or "limit" in err_msg or "quota" in err_msg:
+                        raise shape_err
+                    # 2. Try /generation_all if /shape_generation endpoint is missing/failed
+                    job = self._submit_call(
+                        cli,
+                        api_name="/generation_all",
+                        caption=caption,
+                        image=img_arg,
+                        mv_image_front=None,
+                        mv_image_back=None,
+                        mv_image_left=None,
+                        mv_image_right=None,
+                        steps=steps,
+                        guidance_scale=5.5,
+                        seed=42,
+                        octree_resolution=256,
+                        check_box_rembg=False,
+                        num_chunks=8000,
+                        randomize_seed=False
+                    )
+                    start = time.time()
+                    while not job.done():
+                        if time.time() - start > timeout:
+                            raise TimeoutError(f"Timeout {timeout}s on {space_desc}")
+                        time.sleep(2)
+                    res = job.result()
+                    raw_item = res[0] if len(res) > 0 and res[0] else res[1]
+                    raw_src = raw_item["value"] if isinstance(raw_item, dict) else str(raw_item)
+                    if Path(raw_src).exists() and Path(raw_src).stat().st_size > 0:
+                        logger.info(f"Successfully generated 3D shape from {space_desc} (/generation_all)")
+                        return raw_src
+            except Exception as e:
+                errors.append(f"{space_desc}: {e}")
+                logger.warning(f"Candidate Space {space_desc} failed ({e}); trying next candidate...")
+
+        raise RuntimeError(f"All Hunyuan3D shape generation endpoints exhausted: {'; '.join(errors)}")
+
     # ------------------------------------------------------------------
     # Full pipelines
     # ------------------------------------------------------------------
@@ -726,11 +829,11 @@ class Hunyuan3DClient:
         self,
         image_path: str,
         output_path: str,
-        caption: str = "Masterpiece 3D character sculpt, highly defined sharp facial contours, crisp eye sockets, distinct nose and mouth, sharp horns and hair locks, deep clean garment folds, high-definition anatomical features, ZBrush high-poly digital sculpt, ultra-sharp geometric details, game-ready",
-        steps: int = 40,
+        caption: str = "Masterpiece 3D character sculpt, highly defined sharp facial contours, crisp eye sockets, distinct nose and mouth, clean anatomical geometry, deep clean garment folds, ZBrush high-poly digital sculpt, ultra-sharp geometric details, game-ready",
+        steps: int = 30,
         timeout: int = 180,
         paint_timeout: int = 300,
-        target_faces: Optional[int] = 120000,
+        target_faces: Optional[int] = 150000,
         texture: bool = True
     ) -> str:
         """
@@ -752,68 +855,8 @@ class Hunyuan3DClient:
         # ------------------------------------------------------------------
         if not texture:
             raw_glb = str(out_dest.parent / f"{out_dest.stem}_raw_mesh.glb")
-            got_shape = False
-
-            # Try /shape_generation directly (Tencent Hunyuan3D-2 neural shape DiT)
-            try:
-                shape_job = self._submit_call(
-                    client,
-                    api_name="/shape_generation",
-                    caption=caption,
-                    image=img_arg,
-                    mv_image_front=None,
-                    mv_image_back=None,
-                    mv_image_left=None,
-                    mv_image_right=None,
-                    steps=steps,
-                    guidance_scale=7.0,
-                    seed=42,
-                    octree_resolution=256,
-                    check_box_rembg=True,
-                    num_chunks=8000,
-                    randomize_seed=False
-                )
-                start = time.time()
-                while not shape_job.done():
-                    if time.time() - start > timeout:
-                        raise TimeoutError(f"Hunyuan3D /shape_generation exceeded {timeout}s.")
-                    time.sleep(2)
-                shape_res = shape_job.result()
-                shape_item = shape_res[0] if isinstance(shape_res, (list, tuple)) else shape_res
-                raw_src = shape_item["value"] if isinstance(shape_item, dict) else str(shape_item)
-                shutil.copy(raw_src, raw_glb)
-                got_shape = True
-            except Exception as shape_err:
-                logger.warning(f"Hunyuan3D /shape_generation unavailable ({shape_err}); trying /generation_all.")
-
-            if not got_shape:
-                # /generation_all returns (untextured_mesh, textured_mesh, ...)
-                job = self._submit_call(
-                    client,
-                    api_name="/generation_all",
-                    caption=caption,
-                    image=img_arg,
-                    mv_image_front=None,
-                    mv_image_back=None,
-                    mv_image_left=None,
-                    mv_image_right=None,
-                    steps=steps,
-                    guidance_scale=5.5,
-                    seed=42,
-                    octree_resolution=256,
-                    check_box_rembg=True,
-                    num_chunks=8000,
-                    randomize_seed=False
-                )
-                start = time.time()
-                while not job.done():
-                    if time.time() - start > timeout:
-                        raise TimeoutError(f"Hunyuan3D generation exceeded {timeout}s.")
-                    time.sleep(2)
-                result = job.result()
-                raw_item = result[0] if len(result) > 0 and result[0] else result[1]
-                raw_src = raw_item["value"] if isinstance(raw_item, dict) else str(raw_item)
-                shutil.copy(raw_src, raw_glb)
+            raw_src = self._fetch_raw_neural_shape(clean_image, caption=caption, steps=steps, timeout=timeout)
+            shutil.copy(raw_src, raw_glb)
 
             # Process clean untextured clay mesh (no coloring)
             try:
@@ -872,7 +915,7 @@ class Hunyuan3DClient:
 
                 # 6. Apply 3D Unsharp Relief Boost & Cavity AO baking for crisp sculptural contrast
                 try:
-                    mesh = BlenderPipelineProcessor.sharpen_and_bake_cavity_ao(mesh, boost_relief=0.40)
+                    mesh = BlenderPipelineProcessor.sharpen_and_bake_cavity_ao(mesh, boost_relief=0.15)
                 except Exception as sharp_err:
                     logger.warning(f"Relief sharpening and cavity AO fallback ({sharp_err}).")
                     clay_mat = trimesh.visual.material.PBRMaterial(

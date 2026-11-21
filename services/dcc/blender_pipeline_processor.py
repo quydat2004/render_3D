@@ -526,7 +526,7 @@ if "{safe_tt}":
     @staticmethod
     def sharpen_and_bake_cavity_ao(
         mesh: trimesh.Trimesh,
-        boost_relief: float = 0.40
+        boost_relief: float = 0.15
     ) -> trimesh.Trimesh:
         """
         Enhances 3D sculptural definition and micro-crease contrast for pure clay character models:

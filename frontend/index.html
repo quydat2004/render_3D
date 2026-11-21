@@ -879,8 +879,13 @@
         if (!response.ok) throw new Error("Server error: " + response.statusText);
         const data = await response.json();
 
-        statusTitle.innerText = "Hoàn tất thành công!";
-        statusDesc.innerText = "Mô hình chi tiết cao đã được nạp vào Viewport 3D.";
+        if (data.status === "warning_fallback") {
+          statusTitle.innerText = "⚠️ Cảnh báo: Sử dụng mô hình hình học thay thế";
+          statusDesc.innerText = (data.qa_report && data.qa_report.message) ? data.qa_report.message : "Không thể kết nối AI Hunyuan3D do hết hạn mức ZeroGPU hoặc server bận.";
+        } else {
+          statusTitle.innerText = "Hoàn tất thành công!";
+          statusDesc.innerText = "Mô hình chi tiết cao đã được nạp vào Viewport 3D.";
+        }
 
         if (data.model_url) {
           loadModel(data.model_url);
