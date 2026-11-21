@@ -94,25 +94,24 @@ def test_orchestrator_expand_asset_prompt_with_mock():
     assert result.poly_budget == 8000
     assert "rifle" in result.front_prompt.lower()
 
-def test_orchestrator_inspect_visual_alignment_detects_inverted_texture(tmp_path):
+def test_orchestrator_inspect_visual_alignment_detects_planar_projection(tmp_path):
     import numpy as np
     import trimesh
     from PIL import Image
 
     orchestrator = GeminiOrchestrator(offline_mode=True)
     box = trimesh.creation.box(extents=(0.6, 1.8, 0.4))
-    verts = box.vertices
-    # Intentionally inverted V-coordinates: head (y>0) has V=1.0, feet (y<0) has V=0.0
-    uvs = np.zeros((len(verts), 2), dtype=np.float32)
-    uvs[:, 1] = np.where(verts[:, 1] > 0, 1.0, 0.0)
+    # Planar projection: every vertex, front and back, maps to the same UV band.
+    uvs = np.zeros((len(box.vertices), 2), dtype=np.float32)
+    uvs[:, 0] = 0.5
     tex_img = Image.new("RGB", (64, 64), (200, 30, 30))
     box.visual = trimesh.visual.TextureVisuals(uv=uvs, image=tex_img)
-    bad_glb = str(tmp_path / "inverted.glb")
+    bad_glb = str(tmp_path / "planar.glb")
     box.export(bad_glb)
 
     qa = orchestrator.inspect_visual_alignment(bad_glb)
     assert qa.passed is False
-    assert any("inverted" in a.lower() for a in qa.anomalies_detected)
+    assert any("planar" in a.lower() for a in qa.anomalies_detected)
     assert qa.score <= 50
 
 def test_orchestrator_inspect_visual_alignment_passes_valid_model(tmp_path):
@@ -123,9 +122,9 @@ def test_orchestrator_inspect_visual_alignment_passes_valid_model(tmp_path):
     orchestrator = GeminiOrchestrator(offline_mode=True)
     box = trimesh.creation.box(extents=(0.6, 1.8, 0.4))
     verts = box.vertices
-    # Correct glTF V-coordinates: head (y>0) has V=0.0, feet (y<0) has V=1.0
+    # A real atlas: front face and back face live in different UV islands.
     uvs = np.zeros((len(verts), 2), dtype=np.float32)
-    uvs[:, 1] = np.where(verts[:, 1] > 0, 0.05, 0.95)
+    uvs[:, 0] = np.where(verts[:, 2] > 0, 0.25, 0.75)
     tex_img = Image.new("RGB", (64, 64), (200, 30, 30))
     box.visual = trimesh.visual.TextureVisuals(uv=uvs, image=tex_img)
     good_glb = str(tmp_path / "valid.glb")

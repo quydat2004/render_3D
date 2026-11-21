@@ -28,19 +28,19 @@ def _assign_cylindrical_uvs(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     u = np.zeros(len(v), dtype=np.float32)
     v_coord = np.zeros(len(v), dtype=np.float32)
 
-    # Segment 1: Front face (Z >= 1.46, Y >= -0.02) gets dedicated 50% UV canvas area
-    is_face = (z >= 1.46) & (y >= -0.02)
-    u[is_face] = np.clip(0.5 + x[is_face] / 0.28, 0.05, 0.95)
-    v_coord[is_face] = np.clip(0.5 + (z[is_face] - 1.61) / 0.28, 0.05, 0.95)
+    # Segment 1: Front face (Z >= 1.48, Y >= 0.0) gets dedicated top UV canvas area (V: 0.65 to 0.98)
+    is_face = (z >= 1.48) & (y >= 0.0)
+    u[is_face] = np.clip(0.50 + x[is_face] / 0.26, 0.12, 0.88)
+    v_coord[is_face] = np.clip(0.65 + ((z[is_face] - 1.48) / 0.30) * 0.32, 0.65, 0.98)
 
-    # Segment 2: Rest of body
+    # Segment 2: Rest of body (mapped to lower UV area V: 0.02 to 0.63, strictly non-overlapping with face)
     is_body = ~is_face
     theta = np.arctan2(x[is_body], y[is_body])
     u[is_body] = np.clip((theta / (2.0 * np.pi)) + 0.5, 0.0, 1.0)
     z_min = float(np.min(z[is_body])) if np.any(is_body) else 0.0
-    z_max = float(np.max(z[is_body])) if np.any(is_body) else 1.0
+    z_max = float(np.max(z[is_body])) if np.any(is_body) else 1.48
     height = max(z_max - z_min, 1e-5)
-    v_coord[is_body] = np.clip((z[is_body] - z_min) / height, 0.0, 1.0)
+    v_coord[is_body] = np.clip(((z[is_body] - z_min) / height) * 0.61 + 0.02, 0.02, 0.63)
 
     uv = np.stack([u, v_coord], axis=-1)
     mesh.visual = trimesh.visual.TextureVisuals(uv=uv)
@@ -421,8 +421,8 @@ def generate_plate_armor(archetype: str = "knight") -> trimesh.Trimesh:
 
 def generate_clothing_shell(
     archetype: str = "ghost_robed",
-    num_rings: int = 32,
-    radial_segments: int = 36,
+    num_rings: int = 40,
+    radial_segments: int = 48,
     clothing_type: Optional[str] = None
 ) -> trimesh.Trimesh:
     c_type = clothing_type or ("dress" if "ghost" in str(archetype).lower() else "suit")
@@ -430,7 +430,8 @@ def generate_clothing_shell(
     is_armor = c_type in ["armor", "knight", "mecha"]
 
     top_z = 1.38
-    bottom_z = 0.08 if is_robe_or_dress else (0.75 if is_armor else 0.85)
+    # Robe bottom hem raised to ankle level (0.22) to avoid wrapping feet and tearing during run
+    bottom_z = 0.22 if is_robe_or_dress else (0.75 if is_armor else 0.86)
 
     verts = []
     uvs = []
@@ -440,27 +441,28 @@ def generate_clothing_shell(
         t_v = r / float(num_rings)  # 0 at neck/chest to 1 at bottom hem
         z_curr = top_z - t_v * (top_z - bottom_z)
 
-        # Base radius along body height
+        # Base radius along body height with smooth curvature
         if is_robe_or_dress:
-            # Flared bell-shaped flowing robe
-            base_r = 0.22 + (t_v ** 1.8) * 0.32
+            # Flared bell-shaped flowing robe with gentle taper
+            base_r = 0.21 + (t_v ** 1.5) * 0.22
         elif is_armor:
             # Flared hip faulds & chest cuirass
-            base_r = 0.23 + (0.04 * math.sin(t_v * math.pi * 2.0))
+            base_r = 0.22 + (0.03 * math.sin(t_v * math.pi * 2.0))
         else:
-            # Tactical coat / jacket shell
-            base_r = 0.23 + (t_v * 0.06)
+            # Athletic jersey / tactical jacket shell
+            base_r = 0.22 + (t_v * 0.04)
 
         for s in range(radial_segments):
             t_u = s / float(radial_segments)
             theta = t_u * math.pi * 2.0
 
-            # Cloth wrinkles or armor facets
+            # Cloth wrinkles or armor facets - smooth harmonic drape
             if is_armor:
-                folds = math.cos(theta * 8.0) * 0.015
+                folds = math.cos(theta * 6.0) * 0.010
+            elif is_robe_or_dress:
+                folds = math.sin(theta * 4.0) * (0.006 + t_v * 0.014) + math.cos(theta * 6.0) * (0.003 + t_v * 0.008)
             else:
-                folds = math.sin(theta * 7.0) * (0.015 + t_v * 0.035)
-                folds += math.cos(theta * 13.0) * (0.008 + t_v * 0.018)
+                folds = math.sin(theta * 4.0) * 0.004 + math.cos(theta * 6.0) * 0.003
 
             r_total = base_r + folds
             x = r_total * math.sin(theta)

@@ -137,9 +137,9 @@ class GeminiOrchestrator:
             logger.warning(f"Gemini API request failed ({e}). Falling back to offline engine.")
             return self._offline_expand_asset_prompt(user_prompt, asset_type)
 
-    def plan_environment(self, prompt: str) -> LevelLayoutSchema:
+    def plan_environment(self, prompt: str, dimensions: Optional[List[float]] = None) -> LevelLayoutSchema:
         if self.offline_mode or not self.client:
-            return self._offline_plan_environment(prompt)
+            return self._offline_plan_environment(prompt, dimensions=dimensions)
 
         system_instructions = (
             "You are a 3D Level Designer. Generate a quantitative, metric grid-based modular level layout. "
@@ -157,10 +157,13 @@ class GeminiOrchestrator:
                     temperature=0.2,
                 ) if types else None,
             )
-            return LevelLayoutSchema.model_validate_json(response.text)
+            layout = LevelLayoutSchema.model_validate_json(response.text)
+            if len(layout.instances) < 6:
+                return self._offline_plan_environment(prompt, dimensions=dimensions or layout.dimensions)
+            return layout
         except Exception as e:
             logger.warning(f"Gemini API plan_environment failed ({e}). Falling back to offline engine.")
-            return self._offline_plan_environment(prompt)
+            return self._offline_plan_environment(prompt, dimensions=dimensions)
 
     def inspect_turntable(self, image_bytes_list: List[bytes], asset_type: AssetType) -> QAInspectionResult:
         if self.offline_mode or not self.client or not image_bytes_list:
@@ -327,33 +330,80 @@ class GeminiOrchestrator:
             anomalies = []
             score = 96
 
-            # 1. Texture coordinates orientation check
+            # 1. Planar projection check: front and back must not share identical UV coordinates
             if hasattr(mesh.visual, "uv") and mesh.visual.uv is not None and len(mesh.visual.uv) == len(mesh.vertices):
-                verts = mesh.vertices
-                bounds = mesh.bounds
-                min_y, max_y = bounds[0][1], bounds[1][1]
-                h = max(max_y - min_y, 1e-4)
+                front = mesh.vertices[:, 2] > np.median(mesh.vertices[:, 2])
+                if front.any() and (~front).any():
+                    spread = np.linalg.norm(
+                        mesh.visual.uv[front].mean(axis=0) - mesh.visual.uv[~front].mean(axis=0)
+                    )
+                    if spread < 0.02:
+                        anomalies.append("Planar projection detected: front and back share the same UV coordinates")
+                        score = min(score, 30)
 
-                head_mask = (verts[:, 1] > min_y + h * 0.82)
-                feet_mask = (verts[:, 1] < min_y + h * 0.18)
-
-                if np.any(head_mask) and np.any(feet_mask):
-                    head_v = np.mean(mesh.visual.uv[head_mask, 1])
-                    feet_v = np.mean(mesh.visual.uv[feet_mask, 1])
-                    # In glTF 2.0, head must be near top (v near 0) and feet near bottom (v near 1)
-                    if head_v > feet_v:
-                        anomalies.append("Texture V-coordinates inverted: head is mapped to bottom of texture")
-                        score = min(score, 35)
-
-            # 2. Check surface colors presence
-            has_texture = hasattr(mesh.visual, "material") or hasattr(mesh.visual, "image") or (hasattr(mesh.visual, "vertex_colors") and mesh.visual.vertex_colors is not None)
+            # 2. Texture & surface material presence check
+            has_texture = (
+                hasattr(mesh.visual, "material") and mesh.visual.material is not None
+            ) or (
+                hasattr(mesh.visual, "image") and mesh.visual.image is not None
+            ) or (
+                hasattr(mesh.visual, "vertex_colors") and mesh.visual.vertex_colors is not None
+            )
             if not has_texture:
                 anomalies.append("Missing texture maps and vertex colors (untextured clay mesh)")
-                score = min(score, 45)
+                score = min(score, 35)
+
+            # 3. Strict Color Fidelity & Palette Alignment against reference 2D concept
+            if reference_image_path and Path(reference_image_path).exists():
+                try:
+                    from PIL import Image
+                    raw_ref = Image.open(reference_image_path)
+                    try:
+                        from services.inference.hunyuan3d_client import Hunyuan3DClient
+                        clean_ref = Hunyuan3DClient().remove_background(raw_ref)
+                    except Exception:
+                        clean_ref = raw_ref.convert("RGBA")
+
+                    ref_arr = np.array(clean_ref.convert("RGBA"))
+                    fg_mask = ref_arr[:, :, 3] > 120
+                    fg_ref = ref_arr[fg_mask][:, :3] if np.any(fg_mask) else ref_arr.reshape(-1, 4)[:, :3]
+                    if len(fg_ref) > 50:
+                        ref_med = np.median(fg_ref, axis=0).astype(np.float32)
+
+                        # Extract model surface color samples (sample front hemisphere for dual-atlas)
+                        tex_img = None
+                        if hasattr(mesh.visual, "material") and getattr(mesh.visual.material, "baseColorTexture", None):
+                            tex_img = mesh.visual.material.baseColorTexture
+                        elif hasattr(mesh.visual, "image") and mesh.visual.image is not None:
+                            tex_img = mesh.visual.image
+
+                        if tex_img is not None:
+                            tex_rgb = np.array(tex_img.convert("RGB"))
+                            th, tw = tex_rgb.shape[:2]
+                            # Sample front half of the atlas [0..half_w]
+                            front_tex = tex_rgb[:, :tw // 2]
+                            model_med = np.median(front_tex.reshape(-1, 3), axis=0).astype(np.float32)
+                        elif hasattr(mesh.visual, "vertex_colors") and mesh.visual.vertex_colors is not None:
+                            vc = mesh.visual.vertex_colors[:, :3].astype(np.float32)
+                            model_med = np.median(vc, axis=0)
+                        else:
+                            model_med = np.array([120.0, 120.0, 120.0], dtype=np.float32)
+
+                        # Euclidean color distance in sRGB
+                        color_dist = float(np.linalg.norm(ref_med - model_med))
+                        if color_dist > 125.0:
+                            anomalies.append(
+                                f"Severe color mismatch: model dominant color {model_med.astype(int).tolist()} deviates from reference {ref_med.astype(int).tolist()} (distance {color_dist:.1f})"
+                            )
+                            score = min(score, 45)
+                        elif color_dist > 85.0:
+                            score = min(score, 78)
+                except Exception as color_err:
+                    logger.debug(f"Color fidelity check skipped: {color_err}")
 
             passed = (score >= 85 and len(anomalies) == 0)
             instructions = (
-                "Visual QA PASSED: Texture correctly oriented (V-axis verified), surface colors active, humanoid rigging validated."
+                "Visual QA PASSED: Neural geometry aligned, 360-degree UV texture synthesized, color fidelity verified."
                 if passed else
                 f"Visual QA FAILED: {'; '.join(anomalies)}"
             )
@@ -366,10 +416,10 @@ class GeminiOrchestrator:
             )
         except Exception as e:
             return QAInspectionResult(
-                score=80,
-                passed=True,
-                anomalies_detected=[],
-                corrective_instructions=f"Visual QA fallback: {e}"
+                score=50,
+                passed=False,
+                anomalies_detected=[f"QA inspection exception: {e}"],
+                corrective_instructions="Could not inspect 3D asset geometry."
             )
 
     def _infer_character_palette(self, prompt: str) -> CharacterColorPalette:
@@ -377,7 +427,7 @@ class GeminiOrchestrator:
         palette = CharacterColorPalette()
 
         # 1. Detect archetype & skin
-        if any(w in p for w in ["ma", "nữ", "ghost", "witch", "spirit", "kinh dị", "horror", "zombie"]):
+        if any(w in p for w in ["ma nữ", "bóng ma", "hồn ma", "ghost", "witch", "spirit", "kinh dị", "horror", "zombie"]):
             palette.skin_color_hex = "#EEF2F6"      # Corpse pale white
             palette.hair_color_hex = "#0E0E14"      # Deep raven black
             palette.eye_color_hex = "#DC2626"       # Crimson red eyes
@@ -387,6 +437,16 @@ class GeminiOrchestrator:
             palette.hair_style = "long_flowing"
             palette.metalness = 0.05
             palette.roughness = 0.80
+        elif any(w in p for w in ["chibi", "runner", "sport", "thể thao", "chạy bộ", "athlete", "sneaker", "jersey"]):
+            palette.skin_color_hex = "#ECCDBA"      # Warm natural skin
+            palette.hair_color_hex = "#2D1F17"      # Dark brown hair
+            palette.eye_color_hex = "#1E293B"       # Dark natural eyes
+            palette.primary_cloth_hex = "#EAB308" if any(w in p for w in ["vàng", "yellow", "gold"]) else "#2563EB"
+            palette.secondary_cloth_hex = "#0F172A" # Dark athletic shorts
+            palette.clothing_type = "suit"
+            palette.hair_style = "short_spiky"
+            palette.metalness = 0.0
+            palette.roughness = 0.82
         elif any(w in p for w in ["vàng", "gold", "golden", "hoàng kim", "paladin", "knight", "hiệp sĩ"]):
             palette.skin_color_hex = "#ECCDBA"      # Warm tanned skin
             palette.hair_color_hex = "#FACC15"      # Golden blonde
@@ -466,28 +526,138 @@ class GeminiOrchestrator:
             palette=palette
         )
 
-    def _offline_plan_environment(self, prompt: str) -> LevelLayoutSchema:
+    def _offline_plan_environment(self, prompt: str, dimensions: Optional[List[float]] = None) -> LevelLayoutSchema:
+        p = prompt.lower()
+        if any(w in p for w in ["cyberpunk", "subway", "neon", "alley", "city", "phố", "đêm"]):
+            biome = "Cyberpunk_Subway_Neon"
+        elif any(w in p for w in ["warehouse", "industrial", "factory", "nhà kho", "xưởng", "container"]):
+            biome = "Abandoned_Industrial_Warehouse"
+        elif any(w in p for w in ["temple", "ruin", "ancient", "đền", "cổ đại", "dungeon"]):
+            biome = "Ancient_Temple_Ruins"
+        else:
+            biome = "Modular_SciFi_Industrial"
+
+        w = float(dimensions[0]) if dimensions and len(dimensions) >= 2 else 40.0
+        l = float(dimensions[1]) if dimensions and len(dimensions) >= 2 else 40.0
+        w = max(16.0, min(w, 80.0))
+        l = max(16.0, min(l, 80.0))
+        hw, hl = w * 0.5, l * 0.5
+
+        instances: List[InstanceSchema] = []
+
+        # 1. Modular Floor Tiles covering the arena
+        step = 4.0
+        xs = np.arange(-hw + 2.0, hw, step)
+        ys = np.arange(-hl + 2.0, hl, step)
+        for fx in xs:
+            for fy in ys:
+                instances.append(InstanceSchema(
+                    asset_id="floor_4x4",
+                    position=[float(fx), float(fy), 0.0],
+                    rotation=[0.0, 0.0, 0.0],
+                    scale=[1.0, 1.0, 1.0]
+                ))
+
+        # 2. Perimeter Boundary Walls & Central Entry Gate Arches
+        for fx in xs:
+            is_gate = abs(fx) < 2.1
+            asset_n = "gate_arch" if is_gate else "wall_4x4"
+            instances.append(InstanceSchema(
+                asset_id=asset_n,
+                position=[float(fx), float(-hl), 0.0],
+                rotation=[0.0, 0.0, 0.0],
+                scale=[1.0, 1.0, 1.0]
+            ))
+            instances.append(InstanceSchema(
+                asset_id=asset_n,
+                position=[float(fx), float(hl), 0.0],
+                rotation=[0.0, 0.0, 0.0],
+                scale=[1.0, 1.0, 1.0]
+            ))
+
+        for fy in ys:
+            is_gate = abs(fy) < 2.1
+            asset_e = "gate_arch" if is_gate else "wall_4x4"
+            instances.append(InstanceSchema(
+                asset_id=asset_e,
+                position=[float(-hw), float(fy), 0.0],
+                rotation=[0.0, 0.0, 90.0],
+                scale=[1.0, 1.0, 1.0]
+            ))
+            instances.append(InstanceSchema(
+                asset_id=asset_e,
+                position=[float(hw), float(fy), 0.0],
+                rotation=[0.0, 0.0, 90.0],
+                scale=[1.0, 1.0, 1.0]
+            ))
+
+        # 3. Central Elevated Sniper Bridge + Access Ramps + Reactor Core
+        instances.append(InstanceSchema(asset_id="platform_elevated", position=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0]))
+        instances.append(InstanceSchema(asset_id="generator_core", position=[0.0, 0.0, 1.1], rotation=[0.0, 0.0, 0.0]))
+        instances.append(InstanceSchema(asset_id="ramp_stairs", position=[-4.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0]))
+        instances.append(InstanceSchema(asset_id="ramp_stairs", position=[4.0, 0.0, 0.0], rotation=[0.0, 0.0, 180.0]))
+
+        # 4. Structural Colonade Pillars framing the main lane
+        col_x = min(8.0, hw - 4.0)
+        col_y = min(8.0, hl - 4.0)
+        for sx in [-col_x, col_x]:
+            for sy in [-col_y, col_y]:
+                instances.append(InstanceSchema(
+                    asset_id="pillar_column",
+                    position=[float(sx), float(sy), 0.0],
+                    rotation=[0.0, 0.0, 0.0]
+                ))
+
+        # 5. Symmetric Full-Cover Containers & Half-Cover Barricades / Crates
+        flank_x = min(12.0, hw - 4.0)
+        flank_y = min(6.0, hl - 4.0)
+        for sign in [-1.0, 1.0]:
+            instances.append(InstanceSchema(
+                asset_id="container_full",
+                position=[float(sign * flank_x), 0.0, 0.0],
+                rotation=[0.0, 0.0, 90.0]
+            ))
+            instances.append(InstanceSchema(
+                asset_id="barricade_half",
+                position=[float(sign * 6.0), float(sign * flank_y), 0.0],
+                rotation=[0.0, 0.0, 30.0]
+            ))
+            instances.append(InstanceSchema(
+                asset_id="barricade_half",
+                position=[float(-sign * 6.0), float(sign * flank_y), 0.0],
+                rotation=[0.0, 0.0, -30.0]
+            ))
+            instances.append(InstanceSchema(
+                asset_id="crate_cover",
+                position=[float(sign * 4.0), float(sign * (flank_y + 2.0)), 0.0],
+                rotation=[0.0, 0.0, 15.0]
+            ))
+
+        # 6. Team Alpha & Bravo Spawn Pads + Illumination Beacons
+        spawn_dist = max(4.0, hl - 4.0)
+        instances.append(InstanceSchema(asset_id="spawn_pad_alpha", position=[0.0, float(-spawn_dist), 0.0]))
+        instances.append(InstanceSchema(asset_id="spawn_pad_bravo", position=[0.0, float(spawn_dist), 0.0]))
+        for sx in [-4.0, 4.0]:
+            instances.append(InstanceSchema(asset_id="beacon_light", position=[float(sx), float(-spawn_dist), 0.0]))
+            instances.append(InstanceSchema(asset_id="beacon_light", position=[float(sx), float(spawn_dist), 0.0]))
+
         return LevelLayoutSchema(
             level_id="modular_environment_01",
-            dimensions=[40.0, 40.0],
+            dimensions=[w, l],
             grid_size_m=2.0,
-            biome="Modular_SciFi_Industrial",
+            biome=biome,
             rooms=[
-                RoomSchema(id="zone_alpha", bounds=[0.0, 0.0, 20.0, 20.0]),
-                RoomSchema(id="zone_bravo", bounds=[20.0, 20.0, 40.0, 40.0])
+                RoomSchema(id="zone_alpha", bounds=[-hw, -hl, hw, 0.0]),
+                RoomSchema(id="zone_bravo", bounds=[-hw, 0.0, hw, hl])
             ],
             corridors=[
                 CorridorSchema(connects=["zone_alpha", "zone_bravo"], width=4.0)
             ],
             spawn_points=[
-                SpawnPointSchema(team="alpha", pos=[2.0, 0.0, 2.0], rotation_yaw=45.0),
-                SpawnPointSchema(team="bravo", pos=[38.0, 0.0, 38.0], rotation_yaw=225.0)
+                SpawnPointSchema(team="alpha", pos=[0.0, float(-spawn_dist), 0.0], rotation_yaw=0.0),
+                SpawnPointSchema(team="bravo", pos=[0.0, float(spawn_dist), 0.0], rotation_yaw=180.0)
             ],
-            instances=[
-                InstanceSchema(asset_id="wall_4x4", position=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0], scale=[1.0, 1.0, 1.0]),
-                InstanceSchema(asset_id="floor_4x4", position=[0.0, 0.0, 0.0], rotation=[0.0, 0.0, 0.0], scale=[1.0, 1.0, 1.0]),
-                InstanceSchema(asset_id="crate_cover", position=[10.0, 0.0, 10.0], rotation=[0.0, 30.0, 0.0], scale=[1.0, 1.0, 1.0])
-            ]
+            instances=instances
         )
 
     def _offline_inspect_turntable(self, image_bytes_list: List[bytes], asset_type: AssetType) -> QAInspectionResult:

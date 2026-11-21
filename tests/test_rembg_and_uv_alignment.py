@@ -24,48 +24,28 @@ def test_remove_background_cleans_white_padding(tmp_path):
     assert arr[200, 200, 3] > 200
     assert arr[200, 200, 0] > 180  # red channel preserved
 
-def test_uv_projection_aligns_to_character_bounds(tmp_path):
+def test_remove_background_cleans_attached_floor_shadow(tmp_path):
     client = Hunyuan3DClient()
-
-    # 1. Create character mesh (height 1.8m, width 0.6m)
-    box = trimesh.creation.box(extents=(0.6, 0.3, 1.8))
-    raw_glb = str(tmp_path / "char.glb")
-    box.export(raw_glb)
-
-    # 2. Image with padded margins (character occupies only middle 50%)
-    img = Image.new("RGBA", (500, 500), (255, 255, 255, 0)) # transparent background
+    img = Image.new("RGB", (400, 400), (255, 255, 255))
     draw = ImageDraw.Draw(img)
-    # Head (top of character)
-    draw.ellipse([200, 80, 300, 150], fill=(240, 190, 150, 255))
-    # Red Shirt (chest/torso)
-    draw.rectangle([180, 150, 320, 300], fill=(220, 30, 30, 255))
-    # Legs
-    draw.rectangle([190, 300, 240, 420], fill=(40, 40, 120, 255))
-    draw.rectangle([260, 300, 310, 420], fill=(40, 40, 120, 255))
+    # Character body
+    draw.rectangle([150, 100, 250, 320], fill=(220, 20, 20))
+    # Attached dark floor contact shadow under/behind feet
+    draw.ellipse([140, 318, 260, 345], fill=(70, 70, 70))
 
-    img_path = str(tmp_path / "padded_char.png")
-    img.save(img_path)
+    clean_img = client.remove_background(img)
+    arr = np.array(clean_img)
+    # Character body preserved
+    assert arr[200, 200, 3] > 200
+    # Floor contact shadow cleared to transparent
+    assert arr[335, 200, 3] == 0
 
-    out_glb = str(tmp_path / "projected.glb")
-    client.project_texture_to_mesh(
-        glb_path=raw_glb,
-        image_path=img_path,
-        output_glb_path=out_glb
-    )
-
-    assert Path(out_glb).exists()
-    scene = trimesh.load(out_glb)
-    mesh = list(scene.geometry.values())[0] if isinstance(scene, trimesh.Scene) else scene
-
-    # Verify UV coordinates exist and are non-trivial
-    assert hasattr(mesh.visual, "uv") and mesh.visual.uv is not None
-    uvs = mesh.visual.uv
-
-    # Head vertices (top of 3D mesh, height > 1.5) should map to upper UVs where head is located
-    # not squashed into the middle
-    verts = mesh.vertices
-    head_mask = verts[:, 1] > 1.5
-    assert np.any(head_mask)
-    head_uv_v = uvs[head_mask, 1]
-    # In glTF 2.0 specification, V=0.0 is top (head), V=1.0 is bottom (feet)
-    assert np.mean(head_uv_v) < 0.35
+def test_paint_pipeline_is_the_only_texture_path():
+    """Texture comes from Hunyuan3D-Paint. There is no planar photo projection anywhere."""
+    client = Hunyuan3DClient()
+    assert not hasattr(client, "project_texture_to_mesh")
+    assert Hunyuan3DClient.PAINT_SPACE_ID
+    src = Path(Hunyuan3DClient.texture_mesh_with_paint.__code__.co_filename)
+    text = src.read_text(encoding="utf-8")
+    assert "project_texture_to_mesh" not in text
+    assert "/texture_mesh" in text

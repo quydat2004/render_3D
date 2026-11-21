@@ -89,9 +89,17 @@ def build_humanoid_rig(character_mesh) -> Any:
     min_w_idx = widths.index(min(widths))
     z_neck = max(min(z_steps[min_w_idx], z_min + height * 0.86), z_min + height * 0.45)
     z_head = z_max - (z_max - z_neck) * 0.42
-    z_hip = z_min + (z_neck - z_min) * 0.45
+    head_height_ratio = (z_max - z_neck) / height
+    is_chibi = (head_height_ratio > 0.33)
+
+    z_hip = z_min + (z_neck - z_min) * (0.42 if is_chibi else 0.45)
     z_spine = z_hip + (z_neck - z_hip) * 0.35
     z_chest = z_hip + (z_neck - z_hip) * 0.70
+    z_knee = z_min + (z_hip - z_min) * (0.45 if is_chibi else 0.50)
+
+    # Detect pre-bent knee forward offset
+    knee_slice = [v.co for v in character_mesh.data.vertices if abs(v.co.z - z_knee) < dz * 1.8]
+    knee_center_y = (sum(v.y for v in knee_slice) / len(knee_slice)) if knee_slice else center_y
 
     # Create Armature
     armature_data = bpy.data.armatures.new("Humanoid_Armature")
@@ -156,7 +164,7 @@ def build_humanoid_rig(character_mesh) -> Any:
     for sign, side in [(-1.0, "L"), (1.0, "R")]:
         uleg = edit_bones.new(f"UpperLeg.{side}")
         uleg.head = (center_x + sign * leg_x, center_y, z_hip)
-        uleg.tail = (center_x + sign * leg_x, center_y, z_hip * 0.50)
+        uleg.tail = (center_x + sign * leg_x, knee_center_y, z_knee)
         uleg.parent = hips
 
         lleg = edit_bones.new(f"LowerLeg.{side}")
@@ -323,6 +331,24 @@ def process_auto_rig_and_animate(input_glb: str, output_glb: str, animations: Li
     min_z = min((character_mesh.matrix_world @ mathutils.Vector(v)).z for v in character_mesh.bound_box)
     character_mesh.location.z -= min_z
     bpy.ops.object.transform_apply(location=True)
+
+    # Decimate high-poly neural meshes to ~25,000 tris using Collapse Decimate (preserves UV map & painted texture)
+    poly_count = len(character_mesh.data.polygons)
+    if poly_count > 25000:
+        dec_mod = character_mesh.modifiers.new(name="PreserveUVDecimate", type='DECIMATE')
+        dec_mod.decimate_type = 'COLLAPSE'
+        dec_mod.ratio = max(25000.0 / float(poly_count), 0.02)
+        bpy.ops.object.modifier_apply(modifier=dec_mod.name)
+
+    # Enforce natural matte PBR shader settings (Metallic=0.0, Roughness=0.65)
+    for mat in character_mesh.data.materials:
+        if mat and mat.use_nodes:
+            for node in mat.node_tree.nodes:
+                if node.type == 'BSDF_PRINCIPLED':
+                    if 'Metallic' in node.inputs and not node.inputs['Metallic'].is_linked:
+                        node.inputs['Metallic'].default_value = 0.0
+                    if 'Roughness' in node.inputs and not node.inputs['Roughness'].is_linked:
+                        node.inputs['Roughness'].default_value = 0.65
 
     # Create Humanoid Rig
     armature_obj = build_humanoid_rig(character_mesh)

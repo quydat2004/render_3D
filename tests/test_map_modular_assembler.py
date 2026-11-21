@@ -73,3 +73,25 @@ def test_generate_map_blender_script():
     assert "linked duplicate" in script.lower() or "mesh_data" in script
     assert "wall_01" in script
     assert "export_scene.gltf" in script
+
+
+def test_offline_environment_plan_and_kitbash_details(tmp_path):
+    from services.orchestrator.gemini_orchestrator import GeminiOrchestrator
+    orch = GeminiOrchestrator(offline_mode=True)
+    layout = orch.plan_environment("Cyberpunk neon subway arena", dimensions=[24.0, 24.0])
+    assert "Cyberpunk" in layout.biome
+    assert len(layout.instances) >= 30
+
+    assembler = ModularMapAssembler(grid_size_m=2.0)
+    res = assembler.assemble_scene(layout, output_dir=str(tmp_path))
+    assert res["success"] is True
+    assert res["instance_count"] == len(layout.instances)
+
+    scene = trimesh.load(res["output_glb"])
+    assert isinstance(scene, trimesh.Scene)
+    assert len(scene.geometry) >= 20
+    # Verify exported map is Y-up (horizontal width X/Z >= 20m, vertical height Y ~ 4.2m)
+    extents = scene.extents
+    assert extents[0] >= 20.0
+    assert extents[2] >= 20.0
+    assert 3.5 <= extents[1] <= 6.5

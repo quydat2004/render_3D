@@ -37,6 +37,8 @@ def test_sdf_primitives_and_smin():
 def test_detect_character_archetype():
     gen = Procedural3DGenerator()
     assert gen.detect_character_archetype("Ma nữ kinh dị châu Á áo dài trắng") == CharacterArchetype.GHOST_ROBED
+    assert gen.detect_character_archetype("Chibi sporty runner with yellow jersey") == CharacterArchetype.ATHLETIC_RUNNER
+    assert gen.detect_character_archetype("Cô gái chiến binh nữ dũng cảm") == CharacterArchetype.WARRIOR_HUMANOID
     assert gen.detect_character_archetype("Cyberpunk street samurai warrior") == CharacterArchetype.WARRIOR_HUMANOID
     assert gen.detect_character_archetype("Heavy mecha robot titan") == CharacterArchetype.MECHA_HEAVY
 
@@ -103,4 +105,20 @@ def test_weapon_has_distinct_material_vertex_colors():
     assert hasattr(mesh.visual, "vertex_colors")
     colors = mesh.visual.vertex_colors
     unique_colors = np.unique(colors[:, :3], axis=0)
-    assert len(unique_colors) >= 3
+    assert len(unique_colors) >= 4
+    assert len(mesh.faces) >= 400
+
+
+def test_all_weapon_archetypes_have_detailed_geometry():
+    gen = Procedural3DGenerator()
+    for prompt in [
+        "Crimson plasma katana sword",
+        "Golden battle war hammer",
+        "Cyberpunk sniper rifle with optic scope"
+    ]:
+        mesh = gen.generate_weapon_mesh(prompt)
+        assert isinstance(mesh, trimesh.Trimesh)
+        assert len(mesh.faces) >= 350
+        assert hasattr(mesh.visual, "vertex_colors")
+        unique_colors = np.unique(mesh.visual.vertex_colors[:, :3], axis=0)
+        assert len(unique_colors) >= 4

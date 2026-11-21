@@ -37,12 +37,19 @@ const ModelRenderer: React.FC<AssetViewerProps> = ({
 
       const mat = mesh.material as THREE.MeshStandardMaterial;
       if (mat) {
+        if (mat.map) {
+          mat.map.colorSpace = THREE.SRGBColorSpace;
+          mat.map.needsUpdate = true;
+        }
         if (debugChannel === "wireframe") {
           mat.wireframe = true;
         } else {
           mat.wireframe = false;
           if (debugChannel === "albedo" && mat.map) {
             mat.roughness = 1.0;
+            mat.metalness = 0.0;
+          } else {
+            mat.roughness = 0.65;
             mat.metalness = 0.0;
           }
         }

@@ -47,6 +47,7 @@ def _sdf_box(p: np.ndarray, center: np.ndarray, extents: np.ndarray) -> np.ndarr
 
 class CharacterArchetype(str, Enum):
     GHOST_ROBED = "ghost_robed"
+    ATHLETIC_RUNNER = "athletic_runner"
     WARRIOR_HUMANOID = "warrior_humanoid"
     MECHA_HEAVY = "mecha_heavy"
 
@@ -65,8 +66,10 @@ class Procedural3DGenerator:
 
     def detect_character_archetype(self, prompt: str) -> CharacterArchetype:
         p = prompt.lower()
-        if any(w in p for w in ["ma", "nữ", "ghost", "witch", "spirit", "robed", "áo dài", "dress", "kinh dị"]):
+        if any(w in p for w in ["ma nữ", "bóng ma", "hồn ma", "ghost", "witch", "spirit", "robed", "áo dài", "dress", "kinh dị", "horror", "zombie"]):
             return CharacterArchetype.GHOST_ROBED
+        elif any(w in p for w in ["chibi", "runner", "running", "chạy", "thể thao", "sport", "jersey", "athlete", "casual", "sneaker"]):
+            return CharacterArchetype.ATHLETIC_RUNNER
         elif any(w in p for w in ["mecha", "robot", "titan", "cyborg", "golem", "tank"]):
             return CharacterArchetype.MECHA_HEAVY
         else:
@@ -99,21 +102,24 @@ class Procedural3DGenerator:
         tex_engine = PBRTextureEngine()
 
         palette = concept.palette if concept and hasattr(concept, "palette") else None
-        clothing_type = getattr(palette, "clothing_type", "robe" if "ghost" in archetype.value else "suit")
-        metalness = float(getattr(palette, "metalness", 0.05))
-        roughness = float(getattr(palette, "roughness", 0.8))
+        clothing_type = getattr(palette, "clothing_type", "robe" if archetype == CharacterArchetype.GHOST_ROBED else "suit")
+        metalness = float(getattr(palette, "metalness", 0.05 if archetype != CharacterArchetype.MECHA_HEAVY else 0.85))
+        roughness = float(getattr(palette, "roughness", 0.82 if archetype != CharacterArchetype.MECHA_HEAVY else 0.25))
 
         tex_set = tex_engine.generate_character_textures(archetype.value, width=1024, height=1024, palette=palette)
 
-        skin_rgb = _hex_to_rgb(getattr(palette, "skin_color_hex", "#E8BEA8"))[:3]
-        hair_rgb = _hex_to_rgb(getattr(palette, "hair_color_hex", "#DC2626"))[:3]
-        cloth_rgb = _hex_to_rgb(getattr(palette, "primary_cloth_hex", "#D4AF37"))[:3]
+        skin_rgb = _hex_to_rgb(getattr(palette, "skin_color_hex", "#ECCDBA"))[:3]
+        hair_rgb = _hex_to_rgb(getattr(palette, "hair_color_hex", "#2D1F17"))[:3]
+        default_cloth_hex = "#EAB308" if archetype == CharacterArchetype.ATHLETIC_RUNNER else ("#F5F8FC" if archetype == CharacterArchetype.GHOST_ROBED else "#2563EB")
+        cloth_rgb = _hex_to_rgb(getattr(palette, "primary_cloth_hex", default_cloth_hex))[:3]
 
-        # 1. Base Body with Dedicated Skin PBR Material (Smooth natural skin)
+        # 1. Base Body with Dedicated Skin PBR Material (Smooth natural skin + Zone MetallicRoughness)
         body_mesh = generate_bony_base_body(archetype.value)
         pbr_body = trimesh.visual.material.PBRMaterial(
             baseColorFactor=[c / 255.0 for c in skin_rgb] + [1.0],
             baseColorTexture=tex_set.albedo,
+            normalTexture=tex_set.normal,
+            metallicRoughnessTexture=tex_set.metallic_roughness,
             metallicFactor=0.0,
             roughnessFactor=0.55
         )
@@ -124,6 +130,7 @@ class Procedural3DGenerator:
             outfit_mesh = generate_plate_armor(archetype.value)
             pbr_outfit = trimesh.visual.material.PBRMaterial(
                 baseColorFactor=[c / 255.0 for c in cloth_rgb] + [1.0],
+                normalTexture=tex_set.normal,
                 roughnessFactor=0.18,
                 metallicFactor=0.95,
                 doubleSided=True
@@ -134,6 +141,7 @@ class Procedural3DGenerator:
             pbr_outfit = trimesh.visual.material.PBRMaterial(
                 baseColorTexture=tex_set.alpha_cloth,
                 normalTexture=tex_set.normal,
+                metallicRoughnessTexture=tex_set.metallic_roughness,
                 roughnessFactor=roughness,
                 metallicFactor=metalness,
                 doubleSided=True,
@@ -202,6 +210,14 @@ class Procedural3DGenerator:
             c_clothes = [245, 248, 252, 255]  # Burial white shroud/dress
             c_pants = c_clothes
             c_shoes = c_clothes
+        elif archetype == CharacterArchetype.ATHLETIC_RUNNER:
+            c_skin = [238, 198, 172, 255]     # Warm healthy skin
+            c_hair = [45, 32, 26, 255]        # Brown styled hair
+            c_eye_iris = [35, 30, 28, 255]    # Natural iris
+            c_lips = [190, 85, 90, 255]       # Soft lips
+            c_clothes = [234, 179, 8, 255]    # Athletic yellow jersey
+            c_pants = [24, 30, 42, 255]       # Dark sports shorts / tights
+            c_shoes = [245, 248, 252, 255]    # Clean white running sneakers
         elif archetype == CharacterArchetype.MECHA_HEAVY:
             c_skin = [110, 120, 135, 255]     # Steel chassis
             c_hair = [40, 45, 55, 255]        # Carbon plating
@@ -463,111 +479,370 @@ class Procedural3DGenerator:
     ) -> trimesh.Trimesh:
         archetype = self.detect_weapon_archetype(prompt)
         parts: List[trimesh.Trimesh] = []
+        p_lower = prompt.lower()
 
-        # Color definition for weapon parts
-        c_blade = [0, 240, 255, 255]       # Glowing cyan plasma edge
-        c_steel = [215, 225, 235, 255]     # Silver metallic blade spine
-        c_gold = [225, 175, 45, 255]       # Antique gold / brass guard & pommel
-        c_grip = [28, 28, 34, 255]         # Deep charcoal braided wrap
-        c_body = [40, 44, 52, 255]         # Dark matte gunmetal
-        c_scope = [0, 255, 180, 255]       # Glowing optic lens
+        # Dynamic energy/accent palette from prompt keywords
+        if any(w in p_lower for w in ["đỏ", "red", "crimson", "huyết", "fire", "lửa", "blood"]):
+            c_blade = [255, 45, 55, 255]
+            c_scope = [255, 60, 40, 255]
+        elif any(w in p_lower for w in ["vàng", "gold", "golden", "hoàng kim", "solar", "ánh sáng"]):
+            c_blade = [255, 215, 55, 255]
+            c_scope = [255, 230, 90, 255]
+        elif any(w in p_lower for w in ["xanh lá", "green", "emerald", "jade", "ngọc", "acid", "독"]):
+            c_blade = [35, 245, 115, 255]
+            c_scope = [50, 255, 140, 255]
+        elif any(w in p_lower for w in ["tím", "purple", "violet", "void", "hắc ám", "shadow"]):
+            c_blade = [185, 65, 255, 255]
+            c_scope = [210, 95, 255, 255]
+        else:
+            c_blade = [0, 240, 255, 255]       # Glowing cyan plasma edge
+            c_scope = [0, 255, 180, 255]       # Glowing optic lens
+
+        c_steel = [215, 225, 235, 255]         # High-carbon silver steel
+        c_dark_steel = [120, 130, 145, 255]    # Recessed fuller / barrel flutes
+        c_gold = [225, 175, 45, 255]           # Antique gold / brass guard & trim
+        c_grip = [28, 28, 34, 255]             # Deep charcoal braided wrap / polymer
+        c_body = [44, 48, 58, 255]             # Dark matte gunmetal receiver
+        c_crimson_wrap = [135, 24, 32, 255]    # Traditional rayskin under-wrap
+
+        rot_y_cyl = trimesh.transformations.rotation_matrix(math.radians(90), [1, 0, 0])
 
         if archetype == WeaponArchetype.SWORD_BLADE:
-            # Blade (Steel core)
-            blade_core = trimesh.creation.box(extents=[0.014, 0.82, 0.035])
-            blade_core.apply_translation([0.0, 0.41, 0.0])
-            parts.append(_paint(blade_core, c_steel))
+            # 1. Segmented Curved Blade with Tapered Kissaki Tip, Beveled Edge & Fuller Groove
+            num_segs = 10
+            blade_len = 0.86
+            seg_len = blade_len / num_segs
+            for i in range(num_segs):
+                t0 = i / float(num_segs)
+                t1 = (i + 1) / float(num_segs)
+                t_mid = 0.5 * (t0 + t1)
+                y_pos = 0.03 + (i + 0.5) * seg_len
+                # Subtle katana sori curvature along +Z
+                curve_z = (t_mid ** 1.8) * 0.024
+                # Taper width & depth near kissaki tip
+                taper = 1.0 - max(0.0, (t_mid - 0.72) / 0.28) * 0.65
 
-            # Blade Cutting Edge (Glowing Cyan)
-            blade_edge = trimesh.creation.box(extents=[0.008, 0.82, 0.015])
-            blade_edge.apply_translation([0.0, 0.41, 0.022])
-            parts.append(_paint(blade_edge, c_blade))
+                # Spine (Mune - Polished Steel)
+                spine = trimesh.creation.box(extents=[0.013 * taper, seg_len * 1.04, 0.024 * taper])
+                spine.apply_translation([0.0, y_pos, curve_z - 0.005 * taper])
+                parts.append(_paint(spine, c_steel))
 
-            # Tsuba (Gold oval guard disk)
-            tsuba = trimesh.creation.cylinder(radius=0.058, height=0.012)
-            rot_tsuba = trimesh.transformations.rotation_matrix(math.radians(90), [1, 0, 0])
-            tsuba.apply_transform(rot_tsuba)
-            tsuba.apply_translation([0.0, 0.0, 0.0])
-            parts.append(_paint(tsuba, c_gold))
+                # Fuller Blood Groove (Bo-Hi - Dark Recessed Steel along first 75% of blade)
+                if t_mid < 0.78:
+                    fuller = trimesh.creation.box(extents=[0.015 * taper, seg_len * 0.96, 0.006 * taper])
+                    fuller.apply_translation([0.0, y_pos, curve_z - 0.008 * taper])
+                    parts.append(_paint(fuller, c_dark_steel))
 
-            # Tsuka (Braided handle grip)
-            handle = trimesh.creation.cylinder(radius=0.022, height=0.26)
-            rot_handle = trimesh.transformations.rotation_matrix(math.radians(90), [1, 0, 0])
-            handle.apply_transform(rot_handle)
-            handle.apply_translation([0.0, -0.13, 0.0])
-            parts.append(_paint(handle, c_grip))
+                # Beveled Cutting Edge (Ha - Glowing Plasma / Tempered Hamon Edge)
+                edge = trimesh.creation.box(extents=[0.006 * taper, seg_len * 1.04, 0.014 * taper])
+                edge.apply_translation([0.0, y_pos, curve_z + 0.013 * taper])
+                parts.append(_paint(edge, c_blade))
 
-            # Pommel end cap (Gold)
-            pommel = trimesh.creation.icosphere(subdivisions=2, radius=0.026)
-            pommel.apply_translation([0.0, -0.27, 0.0])
-            parts.append(_paint(pommel, c_gold))
+            # 2. Habaki (Brass/Gold Blade Locking Collar) & Seppa Spacers
+            habaki = trimesh.creation.box(extents=[0.020, 0.034, 0.042])
+            habaki.apply_translation([0.0, 0.022, 0.002])
+            parts.append(_paint(habaki, c_gold))
+
+            seppa_f = trimesh.creation.cylinder(radius=0.026, height=0.005, sections=20)
+            seppa_f.apply_transform(rot_y_cyl)
+            seppa_f.apply_translation([0.0, 0.006, 0.0])
+            parts.append(_paint(seppa_f, c_gold))
+
+            # 3. Ornate Tsuba (Handguard with Outer Gold Rim, Dark Core & 4 Bosses)
+            tsuba_core = trimesh.creation.cylinder(radius=0.056, height=0.010, sections=28)
+            tsuba_core.apply_transform(rot_y_cyl)
+            parts.append(_paint(tsuba_core, c_body))
+
+            tsuba_rim = trimesh.creation.cylinder(radius=0.062, height=0.007, sections=28)
+            tsuba_rim.apply_transform(rot_y_cyl)
+            parts.append(_paint(tsuba_rim, c_gold))
+
+            for angle_deg in [0, 90, 180, 270]:
+                rad = math.radians(angle_deg)
+                boss = trimesh.creation.cylinder(radius=0.009, height=0.014, sections=12)
+                boss.apply_transform(rot_y_cyl)
+                boss.apply_translation([math.cos(rad) * 0.038, 0.0, math.sin(rad) * 0.038])
+                parts.append(_paint(boss, c_gold))
+
+            # 4. Tsuka Handle Core + Alternating Tsuka-Ito Braid Bands + Menuki Ornaments
+            tsuka_core = trimesh.creation.cylinder(radius=0.018, height=0.26, sections=20)
+            tsuka_core.apply_transform(rot_y_cyl)
+            tsuka_core.vertices[:, 0] *= 0.78  # Oval ergonomic cross-section
+            tsuka_core.apply_translation([0.0, -0.135, 0.0])
+            parts.append(_paint(tsuka_core, c_crimson_wrap))
+
+            for band_idx in range(9):
+                by = -0.022 - band_idx * 0.027
+                band = trimesh.creation.cylinder(radius=0.021, height=0.015, sections=20)
+                band.apply_transform(rot_y_cyl)
+                band.vertices[:, 0] *= 0.80
+                rot_tilt = trimesh.transformations.rotation_matrix(
+                    math.radians(14 if band_idx % 2 == 0 else -14), [0, 0, 1]
+                )
+                band.apply_transform(rot_tilt)
+                band.apply_translation([0.0, by, 0.0])
+                parts.append(_paint(band, c_grip))
+
+            for sign in [-1, 1]:
+                menuki = trimesh.creation.icosphere(subdivisions=1, radius=0.008)
+                menuki.apply_translation([sign * 0.016, -0.11, 0.0])
+                parts.append(_paint(menuki, c_gold))
+
+            # 5. Fuchi & Kashira (Ferrule + Pommel Cap + Glowing Energy Ring)
+            fuchi = trimesh.creation.cylinder(radius=0.022, height=0.016, sections=20)
+            fuchi.apply_transform(rot_y_cyl)
+            fuchi.vertices[:, 0] *= 0.82
+            fuchi.apply_translation([0.0, -0.010, 0.0])
+            parts.append(_paint(fuchi, c_gold))
+
+            kashira = trimesh.creation.cylinder(radius=0.022, height=0.020, sections=20)
+            kashira.apply_transform(rot_y_cyl)
+            kashira.vertices[:, 0] *= 0.82
+            kashira.apply_translation([0.0, -0.270, 0.0])
+            parts.append(_paint(kashira, c_gold))
+
+            pommel_gem = trimesh.creation.icosphere(subdivisions=2, radius=0.015)
+            pommel_gem.apply_translation([0.0, -0.285, 0.0])
+            parts.append(_paint(pommel_gem, c_blade))
 
         elif archetype == WeaponArchetype.HAMMER_BLUNT:
-            # Shaft (Dark grip)
-            shaft = trimesh.creation.cylinder(radius=0.025, height=0.85)
-            rot_shaft = trimesh.transformations.rotation_matrix(math.radians(90), [1, 0, 0])
-            shaft.apply_transform(rot_shaft)
+            # 1. Reinforced Warhammer Haft with Ribbed Grip & Flanged Pommel
+            shaft = trimesh.creation.cylinder(radius=0.022, height=0.88, sections=24)
+            shaft.apply_transform(rot_y_cyl)
             shaft.apply_translation([0.0, 0.10, 0.0])
-            parts.append(_paint(shaft, c_grip))
+            parts.append(_paint(shaft, c_dark_steel))
 
-            # Heavy Hammer Head (Steel)
-            head = trimesh.creation.box(extents=[0.14, 0.22, 0.16])
-            head.apply_translation([0.0, 0.48, 0.0])
-            parts.append(_paint(head, c_steel))
+            for g_idx in range(7):
+                gy = -0.30 + g_idx * 0.045
+                grip_ring = trimesh.creation.cylinder(radius=0.026, height=0.028, sections=20)
+                grip_ring.apply_transform(rot_y_cyl)
+                grip_ring.apply_translation([0.0, gy, 0.0])
+                parts.append(_paint(grip_ring, c_grip))
 
-            # Gold trim plates
-            trim = trimesh.creation.box(extents=[0.15, 0.06, 0.17])
-            trim.apply_translation([0.0, 0.48, 0.0])
-            parts.append(_paint(trim, c_gold))
+            pommel_flange = trimesh.creation.cylinder(radius=0.036, height=0.025, sections=16)
+            pommel_flange.apply_transform(rot_y_cyl)
+            pommel_flange.apply_translation([0.0, -0.34, 0.0])
+            parts.append(_paint(pommel_flange, c_gold))
+
+            # 2. Central Reinforced Collar & Top Spear Spike
+            collar = trimesh.creation.box(extents=[0.075, 0.24, 0.075])
+            collar.apply_translation([0.0, 0.46, 0.0])
+            parts.append(_paint(collar, c_gold))
+
+            top_spike = trimesh.creation.cone(radius=0.026, height=0.11, sections=12)
+            rot_spike_y = trimesh.transformations.rotation_matrix(math.radians(-90), [1, 0, 0])
+            top_spike.apply_transform(rot_spike_y)
+            top_spike.apply_translation([0.0, 0.56, 0.0])
+            parts.append(_paint(top_spike, c_steel))
+
+            # 3. Heavy Hammer Core Block + Beveled Striking Face + Kinetic Plasma Core
+            head_core = trimesh.creation.box(extents=[0.13, 0.18, 0.18])
+            head_core.apply_translation([0.0, 0.47, 0.01])
+            parts.append(_paint(head_core, c_body))
+
+            strike_neck = trimesh.creation.cylinder(radius=0.068, height=0.06, sections=8)
+            strike_neck.apply_translation([0.0, 0.47, 0.11])
+            parts.append(_paint(strike_neck, c_steel))
+
+            strike_face = trimesh.creation.cylinder(radius=0.082, height=0.035, sections=8)
+            strike_face.apply_translation([0.0, 0.47, 0.145])
+            parts.append(_paint(strike_face, c_steel))
+
+            energy_rings = trimesh.creation.cylinder(radius=0.074, height=0.016, sections=16)
+            energy_rings.apply_translation([0.0, 0.47, 0.125])
+            parts.append(_paint(energy_rings, c_blade))
+
+            # 4. Rear Armor-Piercing War-Pick Spike
+            back_spike = trimesh.creation.cone(radius=0.048, height=0.16, sections=8)
+            rot_back = trimesh.transformations.rotation_matrix(math.radians(180), [1, 0, 0])
+            back_spike.apply_transform(rot_back)
+            back_spike.apply_translation([0.0, 0.47, -0.08])
+            parts.append(_paint(back_spike, c_steel))
+
+            # 5. Gold Cheek Trim Plates & Rivet Studs
+            for sign in [-1, 1]:
+                cheek = trimesh.creation.box(extents=[0.012, 0.14, 0.14])
+                cheek.apply_translation([sign * 0.068, 0.47, 0.01])
+                parts.append(_paint(cheek, c_gold))
+                for ry in [0.42, 0.52]:
+                    for rz in [-0.03, 0.05]:
+                        rivet = trimesh.creation.icosphere(subdivisions=1, radius=0.008)
+                        rivet.apply_translation([sign * 0.076, ry, rz])
+                        parts.append(_paint(rivet, c_blade))
 
         else:
-            # Rifle / Gun / Blaster
-            rot_b = trimesh.transformations.rotation_matrix(math.radians(90), [1, 0, 0])
-
-            # Barrel (Steel)
-            barrel = trimesh.creation.cylinder(radius=0.018, height=0.62)
-            barrel.apply_transform(rot_b)
-            barrel.apply_translation([0.0, 0.42, 0.06])
+            # High-Detail Tactical / Sci-Fi Rifle
+            # 1. Heavy Fluted Barrel & Parallel Gas Block Tube
+            barrel = trimesh.creation.cylinder(radius=0.016, height=0.62, sections=24)
+            barrel.apply_transform(rot_y_cyl)
+            barrel.apply_translation([0.0, 0.43, 0.065])
             parts.append(_paint(barrel, c_steel))
 
-            # Upper & Lower Receiver (Gunmetal)
-            receiver = trimesh.creation.box(extents=[0.065, 0.38, 0.10])
-            receiver.apply_translation([0.0, 0.06, 0.06])
-            parts.append(_paint(receiver, c_body))
+            gas_tube = trimesh.creation.cylinder(radius=0.009, height=0.42, sections=16)
+            gas_tube.apply_transform(rot_y_cyl)
+            gas_tube.apply_translation([0.0, 0.34, 0.092])
+            parts.append(_paint(gas_tube, c_dark_steel))
 
-            # Handguard / Shroud (Dark)
-            handguard = trimesh.creation.box(extents=[0.055, 0.32, 0.08])
-            handguard.apply_translation([0.0, 0.30, 0.06])
+            # 2. Multi-Baffle Muzzle Brake & Glowing Plasma Bore
+            muzzle_body = trimesh.creation.cylinder(radius=0.024, height=0.09, sections=16)
+            muzzle_body.apply_transform(rot_y_cyl)
+            muzzle_body.apply_translation([0.0, 0.74, 0.065])
+            parts.append(_paint(muzzle_body, c_body))
+
+            for b_i in range(3):
+                baffle = trimesh.creation.cylinder(radius=0.027, height=0.012, sections=16)
+                baffle.apply_transform(rot_y_cyl)
+                baffle.apply_translation([0.0, 0.71 + b_i * 0.028, 0.065])
+                parts.append(_paint(baffle, c_dark_steel))
+
+            muzzle_glow = trimesh.creation.cylinder(radius=0.013, height=0.015, sections=16)
+            muzzle_glow.apply_transform(rot_y_cyl)
+            muzzle_glow.apply_translation([0.0, 0.785, 0.065])
+            parts.append(_paint(muzzle_glow, c_blade))
+
+            # 3. Ventilated Handguard Shroud + Glowing Plasma Conduits
+            handguard = trimesh.creation.box(extents=[0.056, 0.34, 0.078])
+            handguard.apply_translation([0.0, 0.33, 0.062])
             parts.append(_paint(handguard, c_body))
 
-            # Pistol Grip (Charcoal)
-            grip = trimesh.creation.box(extents=[0.04, 0.06, 0.15])
-            rot_g = trimesh.transformations.rotation_matrix(math.radians(18), [1, 0, 0])
+            for v_i in range(6):
+                vy = 0.19 + v_i * 0.052
+                vent = trimesh.creation.box(extents=[0.062, 0.022, 0.036])
+                vent.apply_translation([0.0, vy, 0.065])
+                parts.append(_paint(vent, c_dark_steel))
+
+            for sign in [-1, 1]:
+                conduit = trimesh.creation.box(extents=[0.006, 0.30, 0.010])
+                conduit.apply_translation([sign * 0.029, 0.33, 0.065])
+                parts.append(_paint(conduit, c_blade))
+
+            # 4. Upper & Lower Receiver + Ejection Port + Side Charging Handle
+            upper_rec = trimesh.creation.box(extents=[0.064, 0.36, 0.072])
+            upper_rec.apply_translation([0.0, 0.03, 0.072])
+            parts.append(_paint(upper_rec, c_body))
+
+            lower_rec = trimesh.creation.box(extents=[0.058, 0.28, 0.055])
+            lower_rec.apply_translation([0.0, 0.02, 0.022])
+            parts.append(_paint(lower_rec, c_dark_steel))
+
+            eject_port = trimesh.creation.box(extents=[0.068, 0.085, 0.024])
+            eject_port.apply_translation([0.0, 0.07, 0.075])
+            parts.append(_paint(eject_port, c_steel))
+
+            charging_handle = trimesh.creation.box(extents=[0.045, 0.018, 0.012])
+            charging_handle.apply_translation([-0.038, 0.14, 0.082])
+            parts.append(_paint(charging_handle, c_gold))
+
+            # 5. Full-Length Top Picatinny Rail (14 Machined Recoil Lugs)
+            rail_base = trimesh.creation.box(extents=[0.032, 0.56, 0.010])
+            rail_base.apply_translation([0.0, 0.18, 0.110])
+            parts.append(_paint(rail_base, c_dark_steel))
+
+            for r_i in range(14):
+                ry = -0.07 + r_i * 0.038
+                lug = trimesh.creation.box(extents=[0.036, 0.018, 0.008])
+                lug.apply_translation([0.0, ry, 0.118])
+                parts.append(_paint(lug, c_steel))
+
+            # 6. Trigger Guard, Curved Trigger & Ergonomic Pistol Grip
+            trig_guard = trimesh.creation.box(extents=[0.018, 0.075, 0.042])
+            trig_guard.apply_translation([0.0, -0.005, -0.018])
+            parts.append(_paint(trig_guard, c_body))
+
+            trigger = trimesh.creation.cylinder(radius=0.005, height=0.032, sections=10)
+            rot_trig = trimesh.transformations.rotation_matrix(math.radians(25), [1, 0, 0])
+            trigger.apply_transform(rot_trig)
+            trigger.apply_translation([0.0, -0.005, -0.012])
+            parts.append(_paint(trigger, c_gold))
+
+            grip = trimesh.creation.box(extents=[0.038, 0.058, 0.15])
+            rot_g = trimesh.transformations.rotation_matrix(math.radians(20), [1, 0, 0])
             grip.apply_transform(rot_g)
-            grip.apply_translation([0.0, -0.06, -0.06])
+            grip.apply_translation([0.0, -0.075, -0.065])
             parts.append(_paint(grip, c_grip))
 
-            # Magazine (Black)
-            mag = trimesh.creation.box(extents=[0.035, 0.075, 0.16])
-            mag.apply_translation([0.0, 0.08, -0.07])
+            # 7. Flared Magwell & Ribbed Tactical Magazine
+            magwell = trimesh.creation.box(extents=[0.052, 0.095, 0.040])
+            magwell.apply_translation([0.0, 0.095, 0.002])
+            parts.append(_paint(magwell, c_body))
+
+            mag = trimesh.creation.box(extents=[0.036, 0.076, 0.17])
+            rot_m = trimesh.transformations.rotation_matrix(math.radians(-10), [1, 0, 0])
+            mag.apply_transform(rot_m)
+            mag.apply_translation([0.0, 0.105, -0.085])
             parts.append(_paint(mag, c_grip))
 
-            # Buttstock (Gunmetal)
-            stock = trimesh.creation.box(extents=[0.048, 0.24, 0.12])
-            stock.apply_translation([0.0, -0.24, 0.04])
-            parts.append(_paint(stock, c_body))
+            for m_i in range(4):
+                mz = -0.035 - m_i * 0.034
+                m_rib = trimesh.creation.box(extents=[0.040, 0.080, 0.010])
+                m_rib.apply_transform(rot_m)
+                m_rib.apply_translation([0.0, 0.105 + m_i * 0.005, mz])
+                parts.append(_paint(m_rib, c_dark_steel))
 
-            # Optic Scope Tube
-            scope = trimesh.creation.cylinder(radius=0.022, height=0.22)
-            scope.apply_transform(rot_b)
-            scope.apply_translation([0.0, 0.08, 0.14])
-            parts.append(_paint(scope, c_steel))
+            # 8. Adjustable Tactical Buttstock with Cheek Riser & Rubber Recoil Pad
+            buffer_tube = trimesh.creation.cylinder(radius=0.019, height=0.24, sections=16)
+            buffer_tube.apply_transform(rot_y_cyl)
+            buffer_tube.apply_translation([0.0, -0.25, 0.068])
+            parts.append(_paint(buffer_tube, c_dark_steel))
 
-            # Glowing optic lens
-            lens = trimesh.creation.cylinder(radius=0.021, height=0.015)
-            lens.apply_transform(rot_b)
-            lens.apply_translation([0.0, 0.19, 0.14])
-            parts.append(_paint(lens, c_scope))
+            stock_body = trimesh.creation.box(extents=[0.046, 0.22, 0.115])
+            stock_body.apply_translation([0.0, -0.26, 0.042])
+            parts.append(_paint(stock_body, c_body))
+
+            cheek_rest = trimesh.creation.box(extents=[0.052, 0.15, 0.032])
+            cheek_rest.apply_translation([0.0, -0.24, 0.095])
+            parts.append(_paint(cheek_rest, c_grip))
+
+            butt_pad = trimesh.creation.box(extents=[0.050, 0.025, 0.135])
+            butt_pad.apply_translation([0.0, -0.375, 0.038])
+            parts.append(_paint(butt_pad, c_grip))
+
+            # 9. Dual-Ring Precision Optic Scope + Turrets + Glowing Objective & Ocular Lenses
+            for mount_y in [-0.01, 0.11]:
+                mount = trimesh.creation.box(extents=[0.044, 0.026, 0.045])
+                mount.apply_translation([0.0, mount_y, 0.138])
+                parts.append(_paint(mount, c_dark_steel))
+
+            scope_tube = trimesh.creation.cylinder(radius=0.020, height=0.25, sections=24)
+            scope_tube.apply_transform(rot_y_cyl)
+            scope_tube.apply_translation([0.0, 0.05, 0.160])
+            parts.append(_paint(scope_tube, c_body))
+
+            obj_bell = trimesh.creation.cylinder(radius=0.028, height=0.065, sections=24)
+            obj_bell.apply_transform(rot_y_cyl)
+            obj_bell.apply_translation([0.0, 0.165, 0.160])
+            parts.append(_paint(obj_bell, c_steel))
+
+            ocular_bell = trimesh.creation.cylinder(radius=0.024, height=0.045, sections=24)
+            ocular_bell.apply_transform(rot_y_cyl)
+            ocular_bell.apply_translation([0.0, -0.075, 0.160])
+            parts.append(_paint(ocular_bell, c_steel))
+
+            # Scope Elevation Turret
+            turret = trimesh.creation.cylinder(radius=0.012, height=0.022, sections=14)
+            turret.apply_translation([0.0, 0.05, 0.185])
+            parts.append(_paint(turret, c_gold))
+
+            # Glowing Front & Rear Optic Lenses
+            lens_f = trimesh.creation.cylinder(radius=0.025, height=0.010, sections=24)
+            lens_f.apply_transform(rot_y_cyl)
+            lens_f.apply_translation([0.0, 0.196, 0.160])
+            parts.append(_paint(lens_f, c_scope))
+
+            lens_r = trimesh.creation.cylinder(radius=0.021, height=0.010, sections=24)
+            lens_r.apply_transform(rot_y_cyl)
+            lens_r.apply_translation([0.0, -0.096, 0.160])
+            parts.append(_paint(lens_r, c_scope))
+
+            # 10. Underbarrel Tactical Laser Sight Module
+            laser_box = trimesh.creation.box(extents=[0.034, 0.095, 0.028])
+            laser_box.apply_translation([0.0, 0.42, 0.012])
+            parts.append(_paint(laser_box, c_dark_steel))
+
+            laser_emitter = trimesh.creation.cylinder(radius=0.008, height=0.015, sections=12)
+            laser_emitter.apply_transform(rot_y_cyl)
+            laser_emitter.apply_translation([0.0, 0.472, 0.012])
+            parts.append(_paint(laser_emitter, c_blade))
 
         combined = trimesh.util.concatenate(parts)
         combined.apply_translation([0.0, -float(combined.bounds[0][1]), 0.0])
